@@ -16,7 +16,10 @@ A backend plugin for Graphite and MegaCarbon to replace the Ceres filesystem sto
 	    	[cassandra]
     		KEYSPACE = graphite
     		SERVERS = 192.168.1.1:9160,192.168.1.2:9160,192.168.1.3:9160
-
+  * Start the daemon with:
+  
+        sudo -u www-data /opt/graphite/bin/carbon-daemon.py writer start 
+   
 * Graphite
 	
 	* Modify local_settings.py file located at webapp/graphite/local_settings.py  
@@ -28,7 +31,9 @@ A backend plugin for Graphite and MegaCarbon to replace the Ceres filesystem sto
         GRAPHITE_DATABASE_PLUGIN='graphite_cassandra_plugin'
     		CASSANDRA_KEYSPACE = 'graphite'
     		CASSANDRA_SERVERS = ['192.168.1.1:9160','192.168.1.2:9160','192.168.1.3:9160']
-
+  * Start the web server using the Django dev server with:
+  
+      sudo -u www-data /opt/graphite/bin/run-graphite-devel-server.py  /opt/graphite/
 
 ## Apache Cassandra Schema 
 The Apache Casandra schema used for the Carbon backend store is auto created when initialized. The table layout definitions are: 
