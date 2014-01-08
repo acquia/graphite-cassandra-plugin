@@ -21,10 +21,11 @@ A backend plugin for Graphite and MegaCarbon to replace the Ceres filesystem sto
 	
 	* Modify local_settings.py file located at webapp/graphite/local_settings.py  
 			
-    		DB_PLUGIN = 'graphite_cassandra_plugin'
     		#####################################
     		# Cassandra Plugin Settings         #
     		#####################################
+        GRAPHITE_DATABASE='cassandra'
+        GRAPHITE_DATABASE_PLUGIN='graphite_cassandra_plugin'
     		CASSANDRA_KEYSPACE = 'graphite'
     		CASSANDRA_SERVERS = ['192.168.1.1:9160','192.168.1.2:9160','192.168.1.3:9160']
 
