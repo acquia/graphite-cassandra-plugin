@@ -11,7 +11,7 @@ sudo pip install pytz
 # Setup Graphite
 git clone git://github.com/graphite-project/ceres.git /tmp/graphite/ceres
 git clone -b db-plugin https://github.com/TheLastPickle/carbon.git /tmp/graphite/carbon
-git clone -b db-plugin https://github.com/jfarrell/graphite-web.git /tmp/graphite/graphite-web
+git clone -b db-plugin https://github.com/TheLastPickle/graphite-web.git /tmp/graphite/graphite-web
 # Need this to use ssh keys
 git clone git@github.com:acquia/graphite-cassandra-plugin.git /tmp/graphite-cassandra-plugin
 
