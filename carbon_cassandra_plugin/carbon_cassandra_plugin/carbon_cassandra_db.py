@@ -109,11 +109,11 @@ class DataTree:
       values = client.get(query)
       return values
     except pycassa.NotFoundException:
-      return None
+      return {}
     except Exception as e:
       raise Exception("DataTree.getSliceInfo error %s" % str(e))
 
-    return None
+    return {}
 
 
 class DataNode(object):
