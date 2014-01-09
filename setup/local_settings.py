@@ -254,8 +254,7 @@ TIME_ZONE = 'America/New_York'
 # MIDDLEWARE_CLASSES or APPS
 #from graphite.app_settings import *
 
-GRAPHITE_DATABASE='cassandra'
-GRAPHITE_DATABASE_PLUGIN='graphite_cassandra_plugin'
+GRAPHITE_DATABASE_PLUGIN='graphite_cassandra_plugin.GraphiteCassandraPlugin'
 CASSANDRA_KEYSPACE='graphite'
 CASSANDRA_SERVERS=['127.0.0.1:9160']
 
