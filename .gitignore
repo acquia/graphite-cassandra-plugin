@@ -7,4 +7,4 @@ sdist
 develop-eggs
 
 .DS_Store
-
+.vagrant/
