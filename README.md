@@ -7,30 +7,28 @@ A backend plugin for Graphite and MegaCarbon to replace the Ceres filesystem sto
 
 
 * Carbon
-	
-	* Modify the db.conf file located at conf/carbon-daemons/writer/db.conf 
+  
+  * Modify the db.conf file located at conf/carbon-daemons/writer/db.conf 
 
-    		DATABASE = cassandra
-    		DATABASE_PLUGIN = carbon_cassandra_plugin
+        DATABASE_PLUGIN = carbon_cassandra_plugin.CarbonCassandraDatabase
 
-	    	[cassandra]
-    		KEYSPACE = graphite
-    		SERVERS = 192.168.1.1:9160,192.168.1.2:9160,192.168.1.3:9160
+        [cassandra]
+        KEYSPACE = graphite
+        SERVERS = 192.168.1.1:9160,192.168.1.2:9160,192.168.1.3:9160
   * Start the daemon with:
   
         sudo -u www-data /opt/graphite/bin/carbon-daemon.py writer start 
    
 * Graphite
-	
-	* Modify local_settings.py file located at webapp/graphite/local_settings.py  
-			
-    		#####################################
-    		# Cassandra Plugin Settings         #
-    		#####################################
-        GRAPHITE_DATABASE='cassandra'
-        GRAPHITE_DATABASE_PLUGIN='graphite_cassandra_plugin'
-    		CASSANDRA_KEYSPACE = 'graphite'
-    		CASSANDRA_SERVERS = ['192.168.1.1:9160','192.168.1.2:9160','192.168.1.3:9160']
+  
+  * Modify local_settings.py file located at webapp/graphite/local_settings.py  
+      
+        #####################################
+        # Cassandra Plugin Settings         #
+        #####################################
+        GRAPHITE_DATABASE_PLUGIN='graphite_cassandra_plugin.GraphiteCassandraPlugin'
+        CASSANDRA_KEYSPACE = 'graphite'
+        CASSANDRA_SERVERS = ['192.168.1.1:9160','192.168.1.2:9160','192.168.1.3:9160']
   * Start the web server using the Django dev server with:
   
       sudo -u www-data /opt/graphite/bin/run-graphite-devel-server.py  /opt/graphite/
@@ -41,7 +39,7 @@ The Apache Casandra schema used for the Carbon backend store is auto created whe
 * data_tree_nodes 
   - Metric hierarchical relationship representation 
 * metadata
-	- Metric metedata (Time Step, Retentions, Aggregation Method, etc.)
+  - Metric metedata (Time Step, Retentions, Aggregation Method, etc.)
 * ts{VALUE}
   - Metrics, {VALUE} is the defined time value from each unique storage schema item
 
