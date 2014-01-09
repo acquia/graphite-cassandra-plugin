@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 from itertools import izip
 from os.path import join
@@ -100,13 +101,15 @@ class DataTree:
     if query == '*':
       query = 'root'
     else:
-      query = query.replace('*', '')
+      query = query.replace('.*', '')
 
     try:
       client = pycassa.ColumnFamily(self.cassandra_connection, 'data_tree_nodes')
       #values = list(client.get_range(start=query, finish=query_end, row_count=100))
       values = client.get(query)
       return values
+    except pycassa.NotFoundException:
+      return None
     except Exception as e:
       raise Exception("DataTree.getSliceInfo error %s" % str(e))
 
@@ -160,7 +163,7 @@ class DataNode(object):
   def writeMetadata(self, metadata):
     try:
       if not 'startTime' in metadata:
-        metadata['startTime'] = time.time()
+        metadata['startTime'] = int(time.time())
       client = pycassa.ColumnFamily(self.cassandra_connection, 'metadata')
       client.insert(self.metadataFile, {'metadata': json.dumps(metadata)})
     except Exception as e:
@@ -202,22 +205,22 @@ class DataNode(object):
         raise ValueError("invalid caching behavior configured '%s'" % self.sliceCachingBehavior)
 
   def readSlices(self):
-    values = []
+    slice_info = []
     try:
-      client = pycassa.ColumnFamily(self.cassandra_connection, 'slice_info')
+      client = pycassa.ColumnFamily(self.cassandra_connection, 'metadata')
       rowName = "{0}".format(self.nodePath)
       values = client.get(rowName)
+
+      metadata = json.loads(values['metadata'])
+      slice_info.append((int(metadata['startTime']), int(metadata['timeStep'])))
+      #for _, value in values:
+      #  startTime, timeStep = value.popitem()
+      #  slice_info.append((int(startTime), int(timeStep)))
+
+      #slice_info.sort(reverse=True)
     except:
         pass
 
-    slice_info = []
-    #metadata = json.loads(values['metadata'])
-    #slice_info.append((int(metadata['startTime']), int(metadata['timeStep'])))
-    #for _, value in values:
-    #  startTime, timeStep = value.popitem()
-    #  slice_info.append((int(startTime), int(timeStep)))
-
-    #slice_info.sort(reverse=True)
     return slice_info
 
   def setSliceCachingBehavior(self, behavior):
@@ -408,7 +411,7 @@ class DataNode(object):
 
 
 class DataSlice(object):
-  __slots__ = ('node', 'cassandra_connection', 'startTime', 'timeStep', 'fsPath')
+  __slots__ = ('node', 'cassandra_connection', 'startTime', 'timeStep', 'fsPath', 'retention')
 
   def __init__(self, node, startTime, timeStep):
     self.node = node
@@ -416,6 +419,11 @@ class DataSlice(object):
     self.startTime = startTime
     self.timeStep = timeStep
     self.fsPath = "{0}".format(node.fsPath)
+
+    # TODO: pull from cache within DataNode.readMetadata
+    metadata = self.node.readMetadata()
+    retention = filter(lambda x:x[0] == self.timeStep, metadata['retentions'])[0]
+    self.retention = int(retention[0]) * int(retention[1])
 
   def __repr__(self):
     return "<DataSlice[0x%x]: %s>" % (id(self), self.fsPath)
@@ -453,10 +461,15 @@ class DataSlice(object):
     if timeOffset < 0:
       raise InvalidRequest("requested time range ({0}, {1}) preceeds this slice: {2}".format(fromTime, untilTime, self.startTime))
 
+    values = []
     try:
       client = pycassa.ColumnFamily(self.cassandra_connection, ("ts{0}".format(self.timeStep)))
       rowName = "{0}".format(self.node.fsPath)
-      values = client.get(rowName, column_start="{0}".format(fromTime), column_finish="{0}".format(untilTime))
+      # TODO: Use Cassandra's maximum row limit here. This 1.99 billion is done
+      # so that we don't limit the query at all
+      values = client.get(rowName, column_start="{0}".format(fromTime), column_finish="{0}".format(untilTime), column_count=1999999999)
+    except pycassa.NotFoundException:
+      pass
     except Exception as e:
       raise Exception('DataSlice.read error: %s' % str(e))
 
@@ -506,25 +519,25 @@ class DataSlice(object):
       self.check_for_metric_table(tableName)
       # Add the metric
       client = pycassa.ColumnFamily(self.cassandra_connection, tableName)
-      for t,v in sequence:
-        client.insert(rowName, { str(t) : str(v) })
+      for t, v in sequence:
+        client.insert(rowName, { str(t) : str(v) }, ttl=self.retention)
     except Exception as e:
       raise Exception("DataSlice.write 1 error: {0}".format(e))
 
     # update the slide info for the timestamp lookup
+    #TODO: Evaluate if anything in this try block is necessary
     try:
-      client = pycassa.ColumnFamily(self.cassandra_connection, 'slice_info')
-      client.insert(self.node.fsPath, { str(self.startTime) : str(self.timeStep)})
-
       #client = pycassa.ColumnFamily(self.cassandra_connection, 'metadata')
-      #rowName = "{0}".format(self.node.fsPath)
-      ##client.insert(rowName, { str(self.startTime) : str(self.timeStep) })
-      ## TODO :This will eventually be replaced with something that hits cache
-      ##client.insert(rowName, { 'startTime' : str(self.startTime), 'timeStep' : str(self.timeStep) })
-      #metadata = client.get(rowName)
-      #metadata = json.loads(metadata['metadata'])
-      #metadata['startTime'] = self.startTime
-      #client.insert(rowName, {'metadata' : json.dumps(metadata)})
+      #client.insert(self.node.fsPath, { str(self.startTime) : str(self.timeStep)})
+
+      client = pycassa.ColumnFamily(self.cassandra_connection, 'metadata')
+      rowName = "{0}".format(self.node.fsPath)
+      # TODO :This will eventually be replaced with something that hits cache
+      metadata = client.get(rowName)
+      metadata = json.loads(metadata['metadata'])
+      if not 'startTime' in metadata:
+        metadata['startTime'] = self.startTime
+        client.insert(rowName, {'metadata' : json.dumps(metadata)})
     except Exception as e:
       raise Exception("DataSlice.write 2 error: {0}".format(str(e)))
 
@@ -635,7 +648,7 @@ def initializeTableLayout(keyspace, server_list=[]):
       cf_defs = sys_manager.get_keyspace_column_families(keyspace)
 
       # Loop through and make sure that the necessary column families exist
-      for tablename in ["data_tree_nodes", "metadata", "slice_info"]:
+      for tablename in ["data_tree_nodes", "metadata"]:
         if tablename not in cf_defs.keys():
           sys_manager.create_column_family(
               keyspace,
