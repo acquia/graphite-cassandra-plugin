@@ -31,9 +31,6 @@ setup(name = 'carbon_cassandra_plugin',
     packages = [
         'carbon_cassandra_plugin',
     ],
-    package_dir = { 
-        'carbon_cassandra_plugin' :'src',
-    },
     install_requires = [
         'pycassa',
     ],

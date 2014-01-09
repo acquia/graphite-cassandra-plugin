@@ -31,9 +31,6 @@ setup(name = 'graphite_ceres_plugin',
     packages = [
         'graphite_ceres_plugin',
     ],
-    package_dir = {
-        'graphite_ceres_plugin' :'src',
-    },
     install_requires = [
         'ceres',
     ],

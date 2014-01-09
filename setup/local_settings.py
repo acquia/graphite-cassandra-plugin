@@ -259,3 +259,23 @@ GRAPHITE_DATABASE_PLUGIN='graphite_cassandra_plugin'
 CASSANDRA_KEYSPACE='graphite'
 CASSANDRA_SERVERS=['127.0.0.1:9160']
 
+# Django Logging for development
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {
+        'file': {
+            'level': 'DEBUG',
+            'class': 'logging.FileHandler',
+            'filename': '/opt/graphite/storage/log/webapp/debug.log',
+        },
+    },
+    'loggers': {
+        'django.request': {
+            'handlers': ['file'],
+            'level': 'DEBUG',
+            'propagate': True,
+        },
+    },
+}
+ 
