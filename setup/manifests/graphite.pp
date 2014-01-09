@@ -20,7 +20,7 @@ package {$python_pkgs:
     ensure => latest,
 }
 
-# Debugging
-package{'openjdk-7-jdk':
-    ensure => latest,
-}
+# Enable this if you want Java for running Cassandra locally
+#package{'openjdk-7-jdk':
+#    ensure => latest,
+#}
