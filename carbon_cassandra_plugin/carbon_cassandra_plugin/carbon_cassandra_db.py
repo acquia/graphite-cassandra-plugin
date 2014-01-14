@@ -2,12 +2,13 @@ import os
 import sys
 import json
 from itertools import izip
-from os.path import join
+from os import path
 from bisect import bisect_left
 from time import time
-import pycassa
-from pycassa.system_manager import *
-from pycassa.types import *
+
+from pycassa import ConnectionPool, ColumnFamily, NotFoundException
+from pycassa.system_manager import SystemManager, time
+from pycassa.types import UTF8Type
 
 DEFAULT_TIMESTEP = 60
 DEFAULT_SLICE_CACHING_BEHAVIOR = 'none'
@@ -25,7 +26,7 @@ class DataTree:
   See :func:`setDefaultSliceCachingBehavior` to adjust caching behavior
   """
   def __init__(self, root, keyspace, server_list):
-    self.cassandra_connection = pycassa.ConnectionPool(keyspace, server_list)
+    self.cassandra_connection = ConnectionPool(keyspace, server_list)
     self.root = root
     self.nodeCache = {}
 
@@ -35,7 +36,7 @@ class DataTree:
 
   def hasNode(self, nodePath):
     """Returns whether the Ceres tree contains the given metric"""
-    client = pycassa.ColumnFamily(self.cassandra_connection, 'metadata')
+    client = ColumnFamily(self.cassandra_connection, 'metadata')
     log_info("DataTree.hasNode(): metadata.get(%s)" % (nodePath,))
     try:
        value = client.get(nodePath, column_count=1)
@@ -55,7 +56,7 @@ class DataTree:
     #TODO WTF is this here?
     log_info("DataTree.getNode(): metadata.get(%s)" % (nodePath,))
     try:
-      client = pycassa.ColumnFamily(self.cassandra_connection, 'metadata')
+      client = ColumnFamily(self.cassandra_connection, 'metadata')
       value = client.get(nodePath, column_count=1)
     except Exception as e:
       pass
@@ -86,10 +87,10 @@ class DataTree:
   def getFilesystemPath(self, nodePath):
     """Get the on-disk path of a Ceres node given a metric name"""
     #TODO: WTF is this doing? WHy the cassandra call?
-    client = pycassa.ColumnFamily(self.cassandra_connection, 'metadata')
+    client = ColumnFamily(self.cassandra_connection, 'metadata')
     log_info("DataTree.getFilesystemPath(): metadata.get(%s)" % (nodePath,))
     value = client.get(nodePath)
-    return join(self.root, nodePath.replace('.', os.sep))
+    return path.join(self.root, nodePath.replace('.', os.sep))
 
   def getNodePath(self, fsPath):
     """Get the metric name of a Ceres node given the on-disk path"""
@@ -112,11 +113,11 @@ class DataTree:
 
     log_info("DataTree.getSliceInfo(): data_tree_nodes.get(%s)" % (query,))
     try:
-      client = pycassa.ColumnFamily(self.cassandra_connection, 'data_tree_nodes')
+      client = ColumnFamily(self.cassandra_connection, 'data_tree_nodes')
       #values = list(client.get_range(start=query, finish=query_end, row_count=100))
       values = client.get(query)
       return values
-    except pycassa.NotFoundException:
+    except NotFoundException:
       return {}
     except Exception as e:
       raise Exception("DataTree.getSliceInfo error %s" % str(e))
@@ -133,7 +134,7 @@ class DataNode(object):
     self.tree = tree
     self.nodePath = nodePath
     self.fsPath = nodePath
-    #self.metadataFile = join(fsPath, '.ceres-node')
+    #self.metadataFile = path.join(fsPath, '.ceres-node')
     self.metadataFile = nodePath
     self.timeStep = None
     self.sliceCache = None
@@ -161,7 +162,7 @@ class DataNode(object):
   def readMetadata(self):
     log_info("DataNode.readMetadata(): metadata.get(%s)" % (self.metadataFile,))
     try:
-      client = pycassa.ColumnFamily(self.cassandra_connection, 'metadata')
+      client = ColumnFamily(self.cassandra_connection, 'metadata')
       info = client.get(self.metadataFile)
       metadata = json.loads(info['metadata'])
       self.timeStep = int(metadata['timeStep'])
@@ -174,7 +175,7 @@ class DataNode(object):
     try:
       if not 'startTime' in metadata:
         metadata['startTime'] = int(time.time())
-      client = pycassa.ColumnFamily(self.cassandra_connection, 'metadata')
+      client = ColumnFamily(self.cassandra_connection, 'metadata')
       client.insert(self.metadataFile, {'metadata': json.dumps(metadata)})
     except Exception as e:
       raise Exception('DataNode.writeMetadata error: %s' % str(e))
@@ -219,7 +220,7 @@ class DataNode(object):
     rowName = "{0}".format(self.nodePath)
     log_info("DataNode.readSlices(): metadata.get(%s)" % (rowName,))
     try:
-      client = pycassa.ColumnFamily(self.cassandra_connection, 'metadata')
+      client = ColumnFamily(self.cassandra_connection, 'metadata')
       values = client.get(rowName)
       metadata = json.loads(values['metadata'])
       slice_info.append((int(metadata['startTime']), int(metadata['timeStep'])))
@@ -445,7 +446,7 @@ class DataSlice(object):
     log_info("DataSlice.isEmpty(): " + "ts{0}".format(self.timeStep) + ".get(%s)" % (rowName,))
     
     try:
-      client = pycassa.ColumnFamily(self.cassandra_connection, ("ts{0}".format(self.timeStep)))
+      client = ColumnFamily(self.cassandra_connection, ("ts{0}".format(self.timeStep)))
       rowName = "{0}".format(self.node.fsPath)
       count = client.get(rowName, column_count=1)
     except Exception:
@@ -478,11 +479,11 @@ class DataSlice(object):
     rowName = "{0}".format(self.node.fsPath)
     log_info("DataSlice.read(): "  + "ts{0}".format(self.timeStep) +  ".get(%s)" % (rowName,))
     try:
-      client = pycassa.ColumnFamily(self.cassandra_connection, ("ts{0}".format(self.timeStep)))
+      client = ColumnFamily(self.cassandra_connection, ("ts{0}".format(self.timeStep)))
       # TODO: Use Cassandra's maximum row limit here. This 1.99 billion is done
       # so that we don't limit the query at all
       values = client.get(rowName, column_start="{0}".format(fromTime), column_finish="{0}".format(untilTime), column_count=1999999999)
-    except pycassa.NotFoundException:
+    except NotFoundException:
       pass
     except Exception as e:
       raise Exception('DataSlice.read error: %s' % str(e))
@@ -501,7 +502,7 @@ class DataSlice(object):
     cass_server = self.cassandra_connection.server_list[0]
     keyspace = self.cassandra_connection.keyspace
 
-    sys_manager = pycassa.system_manager.SystemManager(cass_server)
+    sys_manager = SystemManager(cass_server)
     log_info("DataSlice.check_for_metric_table(): sys_manager.get_keyspace_column_families(%s)" % (keyspace,))
     cf_defs = sys_manager.get_keyspace_column_families(keyspace)
 
@@ -510,9 +511,9 @@ class DataSlice(object):
           keyspace,
           tablename,
           super=False,
-          comparator_type=pycassa.types.UTF8Type(),
-          key_validation_class=pycassa.types.UTF8Type(),
-          default_validation_class=pycassa.types.UTF8Type()
+          comparator_type=UTF8Type(),
+          key_validation_class=UTF8Type(),
+          default_validation_class=UTF8Type()
       )
 
   def insert_metric(self, metric, client, isMetric=False):
@@ -535,7 +536,7 @@ class DataSlice(object):
       # Make sure that the table exists
       self.check_for_metric_table(tableName)
       # Add the metric
-      client = pycassa.ColumnFamily(self.cassandra_connection, tableName)
+      client = ColumnFamily(self.cassandra_connection, tableName)
       for t, v in sequence:
         log_info("DataSlice.write() 1: %s.insert(%s)" % (tableName, rowName,))
         client.insert(rowName, { str(t) : str(v) }, ttl=self.retention)
@@ -545,10 +546,10 @@ class DataSlice(object):
     # update the slide info for the timestamp lookup
     #TODO: Evaluate if anything in this try block is necessary
     try:
-      #client = pycassa.ColumnFamily(self.cassandra_connection, 'metadata')
+      #client = ColumnFamily(self.cassandra_connection, 'metadata')
       #client.insert(self.node.fsPath, { str(self.startTime) : str(self.timeStep)})
 
-      client = pycassa.ColumnFamily(self.cassandra_connection, 'metadata')
+      client = ColumnFamily(self.cassandra_connection, 'metadata')
       rowName = "{0}".format(self.node.fsPath)
       # TODO :This will eventually be replaced with something that hits cache
       log_info("DataSlice.write() 2: metadata.get(%s)" % (rowName,))
@@ -562,7 +563,7 @@ class DataSlice(object):
       raise Exception("DataSlice.write 2 error: {0}".format(str(e)))
 
     try:
-      client = pycassa.ColumnFamily(self.cassandra_connection, 'data_tree_nodes')
+      client = ColumnFamily(self.cassandra_connection, 'data_tree_nodes')
       # Strip off the metric name
       #split_metric = '.'.join(self.node.fsPath.split('.')[0:-1])
       #self.insert_metric(split_metric, client)
@@ -648,6 +649,7 @@ class SliceDeleted(Exception):
 
 
 def setDefaultSliceCachingBehavior(behavior):
+  # TODO Should this be global?
   global DEFAULT_SLICE_CACHING_BEHAVIOR
 
   behavior = behavior.lower()
@@ -659,12 +661,15 @@ def setDefaultSliceCachingBehavior(behavior):
 
 def initializeTableLayout(keyspace, server_list=[]):
     try:
+      # TODO randomize server selection
+      # TODO move functionality out of try statement
       cass_server = server_list[0]
-      sys_manager = pycassa.system_manager.SystemManager(cass_server)
+      sys_manager = SystemManager(cass_server)
 
       # Make sure the the keyspace exists
       if keyspace not in sys_manager.list_keyspaces():
-        sys_manager.create_keyspace(keyspace, SIMPLE_STRATEGY, {'replication_factor': '3'})
+        sys_manager.create_keyspace(keyspace, SIMPLE_STRATEGY, \
+                {'replication_factor': '3'})
 
       cf_defs = sys_manager.get_keyspace_column_families(keyspace)
 
@@ -675,9 +680,9 @@ def initializeTableLayout(keyspace, server_list=[]):
               keyspace,
               tablename,
               super=False,
-              comparator_type=pycassa.types.UTF8Type(),
-              key_validation_class=pycassa.types.UTF8Type(),
-              default_validation_class=pycassa.types.UTF8Type()
+              comparator_type=UTF8Type(),
+              key_validation_class=UTF8Type(),
+              default_validation_class=UTF8Type()
           )
     except Exception as e:
       raise Exception("Error initalizing table layout: {0}".format(e))
