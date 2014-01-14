@@ -12,6 +12,10 @@ from pycassa.types import *
 DEFAULT_TIMESTEP = 60
 DEFAULT_SLICE_CACHING_BEHAVIOR = 'none'
 
+# dev code to log using the same logger as graphite web or carbon
+import logging
+log_info = logging.getLogger("info").info
+
 class DataTree:
   """Represents a tree of Ceres metrics contained within a single path on disk
   This is the primary Ceres API.
@@ -32,6 +36,7 @@ class DataTree:
   def hasNode(self, nodePath):
     """Returns whether the Ceres tree contains the given metric"""
     client = pycassa.ColumnFamily(self.cassandra_connection, 'metadata')
+    log_info("DataTree.hasNode(): metadata.get(%s)" % (nodePath,))
     try:
        value = client.get(nodePath, column_count=1)
     except:
@@ -48,11 +53,12 @@ class DataTree:
     """
     #if nodePath not in self.nodeCache.keys():
     #TODO WTF is this here?
+    log_info("DataTree.getNode(): metadata.get(%s)" % (nodePath,))
     try:
       client = pycassa.ColumnFamily(self.cassandra_connection, 'metadata')
       value = client.get(nodePath, column_count=1)
     except Exception as e:
-       pass
+      pass
       #self.nodeCache[nodePath] = CeresNode(self, nodePath, nodePath)
     return DataNode(self, nodePath, nodePath)
 
@@ -81,6 +87,7 @@ class DataTree:
     """Get the on-disk path of a Ceres node given a metric name"""
     #TODO: WTF is this doing? WHy the cassandra call?
     client = pycassa.ColumnFamily(self.cassandra_connection, 'metadata')
+    log_info("DataTree.getFilesystemPath(): metadata.get(%s)" % (nodePath,))
     value = client.get(nodePath)
     return join(self.root, nodePath.replace('.', os.sep))
 
@@ -103,6 +110,7 @@ class DataTree:
     else:
       query = query.replace('.*', '')
 
+    log_info("DataTree.getSliceInfo(): data_tree_nodes.get(%s)" % (query,))
     try:
       client = pycassa.ColumnFamily(self.cassandra_connection, 'data_tree_nodes')
       #values = list(client.get_range(start=query, finish=query_end, row_count=100))
@@ -151,6 +159,7 @@ class DataNode(object):
     return [(slice.startTime, slice.endTime, slice.timeStep) for slice in self.slices]
 
   def readMetadata(self):
+    log_info("DataNode.readMetadata(): metadata.get(%s)" % (self.metadataFile,))
     try:
       client = pycassa.ColumnFamily(self.cassandra_connection, 'metadata')
       info = client.get(self.metadataFile)
@@ -161,6 +170,7 @@ class DataNode(object):
       raise Exception("DataNode.readMetadata error: %s" % str(e))
 
   def writeMetadata(self, metadata):
+    log_info("DataNode.writeMetadata(): metadata.insert(%s)" % (self.metadataFile,))
     try:
       if not 'startTime' in metadata:
         metadata['startTime'] = int(time.time())
@@ -206,11 +216,11 @@ class DataNode(object):
 
   def readSlices(self):
     slice_info = []
+    rowName = "{0}".format(self.nodePath)
+    log_info("DataNode.readSlices(): metadata.get(%s)" % (rowName,))
     try:
       client = pycassa.ColumnFamily(self.cassandra_connection, 'metadata')
-      rowName = "{0}".format(self.nodePath)
       values = client.get(rowName)
-
       metadata = json.loads(values['metadata'])
       slice_info.append((int(metadata['startTime']), int(metadata['timeStep'])))
       #for _, value in values:
@@ -218,7 +228,7 @@ class DataNode(object):
       #  slice_info.append((int(startTime), int(timeStep)))
 
       #slice_info.sort(reverse=True)
-    except:
+    except Exception:
         pass
 
     return slice_info
@@ -432,6 +442,8 @@ class DataSlice(object):
   @property
   def isEmpty(self):
     count = 0
+    log_info("DataSlice.isEmpty(): " + "ts{0}".format(self.timeStep) + ".get(%s)" % (rowName,))
+    
     try:
       client = pycassa.ColumnFamily(self.cassandra_connection, ("ts{0}".format(self.timeStep)))
       rowName = "{0}".format(self.node.fsPath)
@@ -442,9 +454,10 @@ class DataSlice(object):
 
   @property
   def endTime(self):
+    client = pycassa.ColumnFamily(self.cassandra_connection, ("ts{0}".format(self.timeStep)))
+    rowName = "{0}".format(self.node.fsPath)
+    log_info("DataSlice.endTime(): "  + "ts{0}".format(self.timeStep) +  ".get(%s, reversed)" % (rowName,))
     try:
-      client = pycassa.ColumnFamily(self.cassandra_connection, ("ts{0}".format(self.timeStep)))
-      rowName = "{0}".format(self.node.fsPath)
       last_value = client.get(rowName, column_reversed=True, column_count=1)
       return int(timestamp.keys()[-1])
     except Exception:
@@ -462,6 +475,7 @@ class DataSlice(object):
       raise InvalidRequest("requested time range ({0}, {1}) preceeds this slice: {2}".format(fromTime, untilTime, self.startTime))
 
     values = []
+    log_info("DataSlice.read(): "  + "ts{0}".format(self.timeStep) +  ".get(%s)" % (rowName,))
     try:
       client = pycassa.ColumnFamily(self.cassandra_connection, ("ts{0}".format(self.timeStep)))
       rowName = "{0}".format(self.node.fsPath)
@@ -488,6 +502,7 @@ class DataSlice(object):
     keyspace = self.cassandra_connection.keyspace
 
     sys_manager = pycassa.system_manager.SystemManager(cass_server)
+    log_info("DataSlice.check_for_metric_table(): sys_manager.get_keyspace_column_families(%s)" % (keyspace,))
     cf_defs = sys_manager.get_keyspace_column_families(keyspace)
 
     if tablename not in cf_defs.keys():
@@ -503,10 +518,12 @@ class DataSlice(object):
   def insert_metric(self, metric, client, isMetric=False):
     split = metric.split('.')
     if len(split) == 1:
+      log_info("DataSlice.insert_metric() 1: %s.insert(%s)" % (client.name, "root",))
       client.insert('root', { metric : '' })
     else:
       next_metric = '.'.join(split[0:-1])
       metric_type =  'metric' if isMetric else ''
+      log_info("DataSlice.insert_metric() 2: %s.insert(%s)" % (client.name, next_metric,))
       client.insert(next_metric, {'.'.join(split) : metric_type })
       self.insert_metric(next_metric, client)
 
@@ -520,6 +537,7 @@ class DataSlice(object):
       # Add the metric
       client = pycassa.ColumnFamily(self.cassandra_connection, tableName)
       for t, v in sequence:
+        log_info("DataSlice.write() 1: %s.insert(%s)" % (tableName, rowName,))
         client.insert(rowName, { str(t) : str(v) }, ttl=self.retention)
     except Exception as e:
       raise Exception("DataSlice.write 1 error: {0}".format(e))
@@ -533,10 +551,12 @@ class DataSlice(object):
       client = pycassa.ColumnFamily(self.cassandra_connection, 'metadata')
       rowName = "{0}".format(self.node.fsPath)
       # TODO :This will eventually be replaced with something that hits cache
+      log_info("DataSlice.write() 2: metadata.get(%s)" % (rowName,))
       metadata = client.get(rowName)
       metadata = json.loads(metadata['metadata'])
       if not 'startTime' in metadata:
         metadata['startTime'] = self.startTime
+        log_info("DataSlice.write() 3: metadata.insert(%s)" % (rowName,))
         client.insert(rowName, {'metadata' : json.dumps(metadata)})
     except Exception as e:
       raise Exception("DataSlice.write 2 error: {0}".format(str(e)))
@@ -547,6 +567,7 @@ class DataSlice(object):
       #split_metric = '.'.join(self.node.fsPath.split('.')[0:-1])
       #self.insert_metric(split_metric, client)
       rowName = "{0}".format(self.node.fsPath)
+      log_info("DataSlice.write() 4: data_tree_nodes.insert(%s)" % (rowName,))
       client.insert(rowName, {'metric' : 'true'})
       self.insert_metric(rowName, client, True)
     except Exception as e:
