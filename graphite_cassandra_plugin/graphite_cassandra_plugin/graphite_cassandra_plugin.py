@@ -53,18 +53,23 @@ class CassandraFinder:
     self.tree = DataTree(self.directory, keyspace, servers)
 
   def find_nodes(self, query):
-    log.exception("Query is: %s" % query.pattern)
+    
+    log.info("CassandraFinder.find_nodes(): query is: %s" % query.pattern)
     value = self.tree.getSliceInfo(query.pattern)
-    log.exception("Values are: {0}".format(value))
+    log.info("CassandraFinder.find_nodes(): values are: {0}".format(value))
     query_path = query.pattern.replace('.*', '')
-    log.exception("Query path is: {0}".format(query_path))
+    log.info("CassandraFinder.find_nodes(): query_path changed to {0}".format(query_path))
+
 
     for key in value.keys():
       if key == 'metric' and value[key] == 'true':
+        log.info("CassandraFinder.find_nodes(): value true, calling getNode with %s" % (query_path))
         reader = CassandraReader(self.tree.getNode(query_path), query_path)
         yield LeafNode(query_path, reader)
       elif value[key] == 'metric':
+        log.info("find_nodes(): calling getNode with key %s" % (key,))
         reader = CassandraReader(self.tree.getNode(key), key)
         yield LeafNode(key, reader)
       else:
+        log.info("find_nodes(): BranchNode with key %s" % (key,))
         yield BranchNode(key)
