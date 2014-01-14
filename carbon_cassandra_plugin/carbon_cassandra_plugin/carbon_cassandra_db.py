@@ -475,10 +475,10 @@ class DataSlice(object):
       raise InvalidRequest("requested time range ({0}, {1}) preceeds this slice: {2}".format(fromTime, untilTime, self.startTime))
 
     values = []
+    rowName = "{0}".format(self.node.fsPath)
     log_info("DataSlice.read(): "  + "ts{0}".format(self.timeStep) +  ".get(%s)" % (rowName,))
     try:
       client = pycassa.ColumnFamily(self.cassandra_connection, ("ts{0}".format(self.timeStep)))
-      rowName = "{0}".format(self.node.fsPath)
       # TODO: Use Cassandra's maximum row limit here. This 1.99 billion is done
       # so that we don't limit the query at all
       values = client.get(rowName, column_start="{0}".format(fromTime), column_finish="{0}".format(untilTime), column_count=1999999999)
