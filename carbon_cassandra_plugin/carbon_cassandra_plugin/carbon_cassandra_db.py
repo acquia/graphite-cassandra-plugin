@@ -17,7 +17,7 @@ DEFAULT_SLICE_CACHING_BEHAVIOR = 'none'
 import logging
 log_info = logging.getLogger("info").info
 
-class DataTree:
+class DataTree(object):
   """Represents a tree of Ceres metrics contained within a single path on disk
   This is the primary Ceres API.
 

@@ -48,7 +48,7 @@ class CassandraReader(object):
 
     return (time_info, values)
 
-class CassandraFinder:
+class CassandraFinder(object):
   """Creates a tree based on the values in Cassandra, and searches
      over it.
 
