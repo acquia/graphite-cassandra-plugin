@@ -1,50 +1,55 @@
 # Graphite and Carbon Cassandra Plugin
-A backend plugin for Graphite and MegaCarbon to replace the Ceres filesystem store with Apache Cassandra.
+A backend plugin for Graphite and MegaCarbon to replace the Ceres filesystem
+store with Apache Cassandra.
 
 
 ## Setup
-* Download the plugins and add them to the Graphite lib folder or place them within the PYTHONPATH which will be used by Graphite and MegaCarbon
+Download the plugins and add them to the Graphite lib folder or place them
+within the PYTHONPATH which will be used by Graphite and MegaCarbon
 
 
-* Carbon
+### Carbon
+
+Modify the db.conf file located at conf/carbon-daemons/writer/db.conf 
+
+    DATABASE_PLUGIN = carbon_cassandra_plugin.CarbonCassandraDatabase
+
+    [cassandra]
+    KEYSPACE = graphite
+    SERVERS = 192.168.1.1:9160,192.168.1.2:9160,192.168.1.3:9160
+
+Start the daemon with:
   
-  * Modify the db.conf file located at conf/carbon-daemons/writer/db.conf 
+    $ sudo -u www-data /opt/graphite/bin/carbon-daemon.py writer start 
+ 
+### Graphite
 
-        DATABASE_PLUGIN = carbon_cassandra_plugin.CarbonCassandraDatabase
-
-        [cassandra]
-        KEYSPACE = graphite
-        SERVERS = 192.168.1.1:9160,192.168.1.2:9160,192.168.1.3:9160
-  * Start the daemon with:
-  
-        sudo -u www-data /opt/graphite/bin/carbon-daemon.py writer start 
-   
-* Graphite
-  
-  * Modify local_settings.py file located at webapp/graphite/local_settings.py  
+Modify `local_settings.py` file located at `webapp/graphite/local_settings.py`
       
-        #####################################
-        # Cassandra Plugin Settings         #
-        #####################################
-        GRAPHITE_DATABASE_PLUGIN='graphite_cassandra_plugin.GraphiteCassandraPlugin'
-        CASSANDRA_KEYSPACE = 'graphite'
-        CASSANDRA_SERVERS = ['192.168.1.1:9160','192.168.1.2:9160','192.168.1.3:9160']
-  * Start the web server using the Django dev server with:
+    #####################################
+    # Cassandra Plugin Settings         #
+    #####################################
+    GRAPHITE_DATABASE_PLUGIN='graphite_cassandra_plugin.GraphiteCassandraPlugin'
+    CASSANDRA_KEYSPACE = 'graphite'
+    CASSANDRA_SERVERS = ['192.168.1.1:9160','192.168.1.2:9160','192.168.1.3:9160']
+
+Start the web server using the Django dev server with:
   
-      sudo -u www-data /opt/graphite/bin/run-graphite-devel-server.py  /opt/graphite/
+    sudo -u www-data /opt/graphite/bin/run-graphite-devel-server.py  /opt/graphite/
 
 ## Apache Cassandra Schema 
-The Apache Casandra schema used for the Carbon backend store is auto created when initialized. The table layout definitions are: 
+The Apache Cassandra schema used for the Carbon backend store is auto created
+when initialized. The table layout definitions are: 
 
-* data_tree_nodes 
+* `data_tree_nodes`
   - Metric hierarchical relationship representation 
-* metadata
+* `metadata`
   - Metric metedata (Time Step, Retentions, Aggregation Method, etc.)
-* ts{VALUE}
+* `ts{VALUE}`
   - Metrics, {VALUE} is the defined time value from each unique storage schema item
 
 ## Inspecting data from Apache Cassandra CLI
-Edit $USER/.cassandra-cli/assumptions.json and add the following data type assumptions 
+Edit `$USER/.cassandra-cli/assumptions.json` and add the following data type assumptions 
 
     {
       "graphite" : [ {
