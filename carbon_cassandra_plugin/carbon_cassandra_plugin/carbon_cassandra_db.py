@@ -455,7 +455,7 @@ class DataSlice(object):
 
   @property
   def endTime(self):
-    client = pycassa.ColumnFamily(self.cassandra_connection, ("ts{0}".format(self.timeStep)))
+    client = ColumnFamily(self.cassandra_connection, ("ts{0}".format(self.timeStep)))
     rowName = "{0}".format(self.node.fsPath)
     log_info("DataSlice.endTime(): "  + "ts{0}".format(self.timeStep) +  ".get(%s, reversed)" % (rowName,))
     try:
