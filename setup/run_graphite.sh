@@ -11,7 +11,7 @@
 echo "Make sure Cassandra is running on the host machine."
 
 echo "Starting Carbon Daemon server."
-sudo -u www-data /opt/graphite/bin/carbon-daemon.py writer start 2 &> 1
+sudo -u www-data /opt/graphite/bin/carbon-daemon.py writer start
 
 # TODO Run graphite as a background process, append logs to nohup.
 echo "Starting Graphite development server."
