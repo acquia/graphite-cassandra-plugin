@@ -19,6 +19,25 @@ DEFAULT_SLICE_CACHING_BEHAVIOR = 'none'
 import logging
 log_info = logging.getLogger("info").info
 
+class NodeCache(object):
+  """A simple caching object to store the datanode objects.
+  """
+  def __init__(self):
+    self.cache = {}
+
+  def add(self, key, value):
+    self.cache[key] = value
+
+  def get(self, key):
+    try:
+      return self.cache[key]
+    except AttributeError:
+      raise AttributeError("Key %s not found." % key)
+
+  def keys(self):
+    return self.cache.keys()
+
+
 class DataTree(object):
   """Represents a tree of Ceres metrics contained within a single path on disk
   This is the primary Ceres API.
