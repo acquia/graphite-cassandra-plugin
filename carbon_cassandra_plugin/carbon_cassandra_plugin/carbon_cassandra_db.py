@@ -573,24 +573,6 @@ class DataSlice(object):
     values = [float(x) for x in values.values()]
     return TimeSeriesData(fromTime, int(endTime), self.timeStep, values)
 
-  def check_for_metric_table(self, tablename=''):
-    cass_server = self.cassandra_connection.server_list[0]
-    keyspace = self.cassandra_connection.keyspace
-
-    sys_manager = SystemManager(cass_server)
-    log_info("DataSlice.check_for_metric_table(): sys_manager.get_keyspace_column_families(%s)" % (keyspace,))
-    cf_defs = sys_manager.get_keyspace_column_families(keyspace)
-
-    if tablename not in cf_defs.keys():
-      sys_manager.create_column_family(
-          keyspace,
-          tablename,
-          super=False,
-          comparator_type=UTF8Type(),
-          key_validation_class=UTF8Type(),
-          default_validation_class=UTF8Type()
-      )
-
   def insert_metric(self, metric, client, isMetric=False):
     split = metric.split('.')
     if len(split) == 1:
@@ -610,10 +592,15 @@ class DataSlice(object):
       rowName = "{0}".format(self.node.fsPath)
       tableName = "ts{0}".format(self.timeStep)
 
-      # Make sure that the table exists
-      self.check_for_metric_table(tableName)
       # Add the metric
-      client = ColumnFamily(self.cassandra_connection, tableName)
+      try:
+        client = ColumnFamily(self.cassandra_connection, tableName)
+      except Exception as e:
+        # Table doesn't exist, let's add it.
+        log_info("DataSlice.write(): creating table %s." % tableName)
+        createColumnFamily(sys_manager, self.cassandra_connection.keyspace, tablename)
+        client = ColumnFamily(self.cassandra_connection, tableName)
+
       for t, v in sequence:
         log_info("DataSlice.write() 1: %s.insert(%s)" % (tableName, rowName,))
         client.insert(rowName, { str(t) : str(v) }, ttl=self.retention)
@@ -749,15 +736,19 @@ def initializeTableLayout(keyspace, server_list=[]):
       # Loop through and make sure that the necessary column families exist
       for tablename in ["data_tree_nodes", "metadata"]:
         if tablename not in cf_defs.keys():
-          sys_manager.create_column_family(
-              keyspace,
-              tablename,
-              super=False,
-              comparator_type=UTF8Type(),
-              key_validation_class=UTF8Type(),
-              default_validation_class=UTF8Type()
-          )
+          createColumnFamily(sys_manager, keyspace, tablename)
     except Exception as e:
       raise Exception("Error initalizing table layout: {0}".format(e))
 
+
+def createColumnFamily(sys_manager, keyspace, tablename):
+  """Create column family with UTF8Type comparators."""
+  sys_manager.create_column_family(
+      keyspace,
+      tablename,
+      super=False,
+      comparator_type=UTF8Type(),
+      key_validation_class=UTF8Type(),
+      default_validation_class=UTF8Type()
+  )
 
