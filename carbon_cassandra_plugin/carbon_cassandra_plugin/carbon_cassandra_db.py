@@ -63,7 +63,7 @@ class DataTree(object):
     self._metadata_cf = ColumnFamily(self.cassandra_connection, 
       'metadata', read_consistency_level=self.read_consistency_level, 
       write_consistency_level=self.write_consistency_level)
-      
+
   def __repr__(self):
     return "<DataTree[0x%x]: %s>" % (id(self), self.root)
   __str__ = __repr__
@@ -82,7 +82,7 @@ class DataTree(object):
   def getNode(self, nodePath):
     """Returns a Ceres node given a metric name
 
-      :param nodePath: The name of a metric
+      :param nodePath: A metric name
 
       :returns: :class:`DataNode` or `None`
     """
@@ -101,6 +101,7 @@ class DataTree(object):
     node = DataNode(self, meta_data, nodePath, nodePath)
     self._cache.add(node.nodePath, node)
     return node
+
 
   def createNode(self, nodePath, **properties):
     """Creates a new metric given a new metric name and optional per-node metadata
@@ -173,7 +174,6 @@ class DataNode(object):
   def __init__(self, tree, meta_data, nodePath, fsPath):
     self.tree = tree
     self.nodePath = nodePath
-    # TODO Should we still pass in fsPath?
     self.fsPath = nodePath
     #self.metadataFile = path.join(fsPath, '.ceres-node')
     self.metadataFile = nodePath
