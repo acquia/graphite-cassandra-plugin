@@ -10,6 +10,8 @@ from pycassa import ConnectionPool, ColumnFamily, NotFoundException
 from pycassa.system_manager import SystemManager, time
 from pycassa.types import UTF8Type
 
+from node_cache import NodeCache
+
 DEFAULT_TIMESTEP = 60
 DEFAULT_SLICE_CACHING_BEHAVIOR = 'none'
 
@@ -28,7 +30,7 @@ class DataTree(object):
   def __init__(self, root, keyspace, server_list):
     self.cassandra_connection = ConnectionPool(keyspace, server_list)
     self.root = root
-    self.nodeCache = {}
+    self.nodeCache = NodeCache()
 
   def __repr__(self):
     return "<DataTree[0x%x]: %s>" % (id(self), self.root)
@@ -48,20 +50,17 @@ class DataTree(object):
   def getNode(self, nodePath):
     """Returns a Ceres node given a metric name
 
-      :param nodePath: A metric name
+      :param nodePath: The name of a metric
 
       :returns: :class:`DataNode` or `None`
     """
-    #if nodePath not in self.nodeCache.keys():
-    #TODO WTF is this here?
     log_info("DataTree.getNode(): metadata.get(%s)" % (nodePath,))
-    try:
-      client = ColumnFamily(self.cassandra_connection, 'metadata')
-      value = client.get(nodePath, column_count=1)
-    except Exception as e:
-      pass
-      #self.nodeCache[nodePath] = CeresNode(self, nodePath, nodePath)
-    return DataNode(self, nodePath, nodePath)
+    if nodePath not in self.nodeCache.keys():
+      datanode = DataNode(self, nodePath, nodePath)
+      # Add new DataNode to cache
+      self.nodeCache.add(nodePath, datanode)
+      return datanode
+    return self.nodeCache.get(nodePath)
 
   def createNode(self, nodePath, **properties):
     """Creates a new metric given a new metric name and optional per-node metadata
@@ -133,6 +132,7 @@ class DataNode(object):
   def __init__(self, tree, nodePath, fsPath):
     self.tree = tree
     self.nodePath = nodePath
+    # TODO Should we still pass in fsPath?
     self.fsPath = nodePath
     #self.metadataFile = path.join(fsPath, '.ceres-node')
     self.metadataFile = nodePath
