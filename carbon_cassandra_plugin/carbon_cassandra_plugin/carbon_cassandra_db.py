@@ -197,7 +197,7 @@ class DataNode(object):
     """
     meta_data.setdefault('timeStep', DEFAULT_TIMESTEP)
     node = cls(tree, meta_data, nodePath, nodePath)
-    node.writeMetadata(properties)
+    node.writeMetadata(meta_data)
     return node
 
 
