@@ -73,11 +73,8 @@ class DataTree(object):
 
   def hasNode(self, nodePath):
     """Returns whether the Ceres tree contains the given metric"""
-
-    existing = self._cache.get(nodePath)
-    if existing is not None:
-      return True
-
+    
+    # TODO: check the cache.
     log_info("DataTree.hasNode(): metadata.get(%s)" % (nodePath,))
     try:
       # faster to read a named column
@@ -220,9 +217,9 @@ class DataNode(object):
 
     if not 'startTime' in metadata:
       metadata['startTime'] = int(time.time())
+    self._meta_data.update(metadata)
     self.tree._metadata_cf.insert(self.metadataFile, 
-      {'metadata': json.dumps(metadata)})
-    return
+      {'metadata': json.dumps(self._meta_data)})
 
   @property
   def slices(self):
@@ -597,12 +594,14 @@ class DataSlice(object):
   def insert_metric(self, metric, client, isMetric=False):
     split = metric.split('.')
     if len(split) == 1:
-      log_info("DataSlice.insert_metric() 1: %s.insert(%s)" % (client.name, "root",))
+      log_info("DataSlice.insert_metric() 1: %s.insert(%s)" % (
+        client.column_family, "root",))
       client.insert('root', { metric : '' })
     else:
       next_metric = '.'.join(split[0:-1])
       metric_type =  'metric' if isMetric else ''
-      log_info("DataSlice.insert_metric() 2: %s.insert(%s)" % (client.name, next_metric,))
+      log_info("DataSlice.insert_metric() 2: %s.insert(%s)" % (
+        client.column_family, next_metric,))
       client.insert(next_metric, {'.'.join(split) : metric_type })
       self.insert_metric(next_metric, client)
 
@@ -619,27 +618,21 @@ class DataSlice(object):
         log_info("DataSlice.write() 1: %s.insert(%s)" % (tableName, rowName,))
         client.insert(rowName, { str(t) : str(v) }, ttl=self.retention)
     except Exception as e:
+      log_info("ERROR WRITING 1 %s" % (str(e),))
+      print e
       raise Exception("DataSlice.write 1 error: {0}".format(e))
 
     # update the slide info for the timestamp lookup
-    #TODO: Evaluate if anything in this try block is necessary
     try:
-      #client = ColumnFamily(self.cassandra_connection, 'metadata')
-      #client.insert(self.node.fsPath, { str(self.startTime) : str(self.timeStep)})
-
-      client = ColumnFamily(self.cassandra_connection, 'metadata')
-      rowName = "{0}".format(self.node.fsPath)
-      # TODO :This will eventually be replaced with something that hits cache
-      log_info("DataSlice.write() 2: metadata.get(%s)" % (rowName,))
-      metadata = client.get(rowName)
-      metadata = json.loads(metadata['metadata'])
-      if not 'startTime' in metadata:
-        metadata['startTime'] = self.startTime
-        log_info("DataSlice.write() 3: metadata.insert(%s)" % (rowName,))
-        client.insert(rowName, {'metadata' : json.dumps(metadata)})
-    except Exception as e:
-      raise Exception("DataSlice.write 2 error: {0}".format(str(e)))
-
+      if not self.node.readMetadata().get("startTime"):
+        meta = self.node.readMetadata()
+        meta["startTime"] = self.startTime
+        self.node.writeMetadata(meta)
+    except (Exception) as e:
+      log_info("ERROR WRITING 2 %s" % (str(e),))
+      print e
+      raise e
+      
     try:
       client = ColumnFamily(self.cassandra_connection, 'data_tree_nodes')
       # Strip off the metric name
@@ -650,6 +643,8 @@ class DataSlice(object):
       client.insert(rowName, {'metric' : 'true'})
       self.insert_metric(rowName, client, True)
     except Exception as e:
+      log_info("ERROR WRITING 3 %s" % (str(e),))
+      print e
       raise Exception("DataSlice.write 3 error: {0}".format(str(e)))
 
   def __cmp__(self, other):
