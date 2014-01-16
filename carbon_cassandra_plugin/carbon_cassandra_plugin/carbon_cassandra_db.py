@@ -220,8 +220,9 @@ class DataNode(object):
 
     if not 'startTime' in metadata:
       metadata['startTime'] = int(time.time())
-    self._metadata_cf.insert(self.metadataFile, 
+    self.tree._metadata_cf.insert(self.metadataFile, 
       {'metadata': json.dumps(metadata)})
+    return
 
   @property
   def slices(self):
