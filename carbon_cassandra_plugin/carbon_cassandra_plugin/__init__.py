@@ -1,5 +1,12 @@
 import carbon_cassandra_db
 
+"""Implements the Carbon API for providing a database. 
+
+This class should implement the interface defined in 
+carbon.database.TimeSeriesDatabase. We do not have a import here as this 
+class is also used by Graphite and we cannot import carbon from the
+running graphite process.
+"""
 class CarbonCassandraDatabase(object):
   plugin_name = 'cassandra'
 

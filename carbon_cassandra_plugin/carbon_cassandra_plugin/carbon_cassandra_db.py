@@ -4,14 +4,11 @@ import json
 import os
 from os import path
 import sys
-from time import time
 
-import pycassa
+from pycassa import ConsistencyLevel, ConnectionPool, ColumnFamily,\
+   NotFoundException
 from pycassa.cassandra.ttypes import ConsistencyLevel
-
-import pycassa import ConnectionPool, ColumnFamily, NotFoundException
-from pycassa.cassandra.ttypes import ConsistencyLevel
-from pycassa.system_manager import SystemManager
+from pycassa.system_manager import SystemManager, time
 from pycassa.types import UTF8Type
 
 DEFAULT_TIMESTEP = 60
@@ -66,28 +63,34 @@ class DataTree(object):
     self._metadata_cf = ColumnFamily(self.cassandra_connection, 
       'metadata', read_consistency_level=self.read_consistency_level, 
       write_consistency_level=self.write_consistency_level)
-
+    self._data_tree_cf = ColumnFamily(self.cassandra_connection, 
+      'data_tree_nodes', read_consistency_level=self.read_consistency_level, 
+      write_consistency_level=self.write_consistency_level)
+      
   def __repr__(self):
     return "<DataTree[0x%x]: %s>" % (id(self), self.root)
   __str__ = __repr__
 
   def hasNode(self, nodePath):
     """Returns whether the Ceres tree contains the given metric"""
-    client = ColumnFamily(self.cassandra_connection, 'metadata')
+    
+    # TODO: check the cache.
     log_info("DataTree.hasNode(): metadata.get(%s)" % (nodePath,))
     try:
-       value = client.get(nodePath, column_count=1)
-    except:
+      # faster to read a named column
+      self._metadata_cf.get(nodePath, columns=["metadta"])
+      return True
+    except (NotFoundException):
        return False
-
-    return value
 
   def getNode(self, nodePath):
     """Returns a Ceres node given a metric name
 
+      Raises :exc:`NodeNotFound` if the node is not found.
+      
       :param nodePath: A metric name
 
-      :returns: :class:`DataNode` or `None`
+      :returns: :class:`DataNode`
     """
     
     existing = self._cache.get(nodePath)
@@ -98,7 +101,7 @@ class DataTree(object):
     try:
       data = self._metadata_cf.get(nodePath, columns=["metadata"])
     except (NotFoundException) as e:
-      raise RuntimeError("Node %s not found" % (nodePath))
+      raise NodeNotFound("Node %s not found" % (nodePath))
     
     meta_data = json.loads(data["metadata"])
     node = DataNode(self, meta_data, nodePath, nodePath)
@@ -107,32 +110,30 @@ class DataTree(object):
 
 
   def createNode(self, nodePath, **properties):
-    """Creates a new metric given a new metric name and optional per-node metadata
+    """Creates a new metric given a new metric name and optional per-node 
+      metadata
+      
       :keyword nodePath: The new metric name.
-      :keyword \*\*properties: Arbitrary key-value properties to store as metric metadata.
+      :keyword \*\*properties: Arbitrary key-value properties to store as 
+      metric metadata.
 
       :returns: :class:`DataNode`
     """
-    return DataNode.create(self, nodePath, **properties)
+    return DataNode.create(self, properties, nodePath)
 
   def store(self, nodePath, datapoints):
     """Store a list of datapoints associated with a metric
+    
       :keyword nodePath: The metric name to write to
       :keyword datapoints: A list of datapoint tuples: (timestamp, value)
     """
-    node = self.getNode(nodePath)
-
-    if node is None:
-      raise NodeNotFound("The node '%s' does not exist in this tree" % nodePath)
-
-    node.write(datapoints)
-
+    
+    self.getNode(nodePath).write(datapoints)
+    return
+    
   def getFilesystemPath(self, nodePath):
-    """Get the on-disk path of a Ceres node given a metric name"""
-    #TODO: WTF is this doing? WHy the cassandra call?
-    client = ColumnFamily(self.cassandra_connection, 'metadata')
-    log_info("DataTree.getFilesystemPath(): metadata.get(%s)" % (nodePath,))
-    value = client.get(nodePath)
+    """Get the on-disk path of a Ceres node given a metric name
+    """
     return path.join(self.root, nodePath.replace('.', os.sep))
 
   def getNodePath(self, fsPath):
@@ -156,16 +157,10 @@ class DataTree(object):
 
     log_info("DataTree.getSliceInfo(): data_tree_nodes.get(%s)" % (query,))
     try:
-      client = ColumnFamily(self.cassandra_connection, 'data_tree_nodes')
-      #values = list(client.get_range(start=query, finish=query_end, row_count=100))
-      values = client.get(query)
-      return values
-    except NotFoundException:
+      return self._data_tree_cf.get(query)
+    except (NotFoundException):
+      # empty dict to say there is are no sub nodes.
       return {}
-    except Exception as e:
-      raise Exception("DataTree.getSliceInfo error %s" % str(e))
-
-    return {}
 
 
 class DataNode(object):
@@ -181,6 +176,9 @@ class DataNode(object):
     #self.metadataFile = path.join(fsPath, '.ceres-node')
     self.metadataFile = nodePath
     self.timeStep = None
+    # sliceCache is sometimes a list of DataSlice objects and sometimes
+    # a single DataSlice object. 
+    # TODO: Consider make it a list at all times.
     self.sliceCache = None
     self.sliceCachingBehavior = DEFAULT_SLICE_CACHING_BEHAVIOR
     self.cassandra_connection = tree.cassandra_connection
@@ -193,75 +191,88 @@ class DataNode(object):
   __str__ = __repr__
 
   @classmethod
-  def create(cls, tree, nodePath, **properties):
-    # Create the initial metadata
-    timeStep = properties['timeStep'] = properties.get('timeStep', DEFAULT_TIMESTEP)
-    node = cls(tree, nodePath, nodePath)
+  def create(cls, tree, meta_data, nodePath):
+    """Construct a new DataNode with the `node_path` and `meta_data` 
+    in the `tree` and store it.
+    """
+    meta_data.setdefault('timeStep', DEFAULT_TIMESTEP)
+    node = cls(tree, meta_data, nodePath, nodePath)
     node.writeMetadata(properties)
-
     return node
 
 
   @property
   def slice_info(self):
-    return [(slice.startTime, slice.endTime, slice.timeStep) for slice in self.slices]
+    return [
+      (si.startTime, si.endTime, si.timeStep) 
+      for si in self.slices
+    ]
 
   def readMetadata(self):
     return self._meta_data
-     # log_info("DataNode.readMetadata(): metadata.get(%s)" % (self.metadataFile,))
-#     try:
-#       client = ColumnFamily(self.cassandra_connection, 'metadata')
-#       info = client.get(self.metadataFile)
-#       metadata = json.loads(info['metadata'])
-#       self.timeStep = int(metadata['timeStep'])
-#       return metadata
-#     except Exception as e:
-#       raise Exception("DataNode.readMetadata error: %s" % str(e))
 
   def writeMetadata(self, metadata):
-    log_info("DataNode.writeMetadata(): metadata.insert(%s)" % (self.metadataFile,))
-    try:
-      if not 'startTime' in metadata:
-        metadata['startTime'] = int(time.time())
-      client = ColumnFamily(self.cassandra_connection, 'metadata')
-      client.insert(self.metadataFile, {'metadata': json.dumps(metadata)})
-    except Exception as e:
-      raise Exception('DataNode.writeMetadata error: %s' % str(e))
+    log_info("DataNode.writeMetadata(): metadata.insert(%s)" % (
+      self.metadataFile,))
+
+    if not 'startTime' in metadata:
+      metadata['startTime'] = int(time.time())
+    self._metadata_cf.insert(self.metadataFile, 
+      {'metadata': json.dumps(metadata)})
 
   @property
   def slices(self):
+    
+    # What happens when the sliceCache is null
     if self.sliceCache:
       if self.sliceCachingBehavior == 'all':
-        for slice in self.sliceCache:
-          yield slice
+        for data_slice in self.sliceCache:
+          yield data_slice
 
       elif self.sliceCachingBehavior == 'latest':
+        # TODO: This yielding the entire list, think it should return 
+        # the last item in the list
         yield self.sliceCache
         infos = self.readSlices()
+        # TODO: Why does this skip the first item ?
         for info in infos[1:]:
+          # TODO: this is passing startTime and timeStep
+          # remove the * call and pass proper args
           yield DataSlice(self, *info)
 
     else:
       if self.sliceCachingBehavior == 'all':
-        self.sliceCache = [DataSlice(self, *info) for info in self.readSlices()]
-        for slice in self.sliceCache:
-          yield slice
+        # TODO: this is passing startTime and timeStep
+        # remove the * call and pass proper args
+        self.sliceCache = [
+          DataSlice(self, *info) 
+          for info in self.readSlices()
+        ]
+        for data_slice in self.sliceCache:
+          yield data_slice
 
       elif self.sliceCachingBehavior == 'latest':
         infos = self.readSlices()
         if infos:
+          # TODO: this is passing startTime and timeStep
+          # remove the * call and pass proper args
           self.sliceCache = DataSlice(self, *infos[0])
           yield self.sliceCache
 
         for info in infos[1:]:
+          # TODO: this is passing startTime and timeStep
+          # remove the * call and pass proper args
           yield DataSlice(self, *info)
 
       elif self.sliceCachingBehavior == 'none':
         for info in self.readSlices():
+          # TODO: this is passing startTime and timeStep
+          # remove the * call and pass proper args
           yield DataSlice(self, *info)
 
       else:
-        raise ValueError("invalid caching behavior configured '%s'" % self.sliceCachingBehavior)
+        raise ValueError("invalid caching behavior configured '%s'" % (
+          self.sliceCachingBehavior,))
 
   def readSlices(self):
     return [
@@ -293,15 +304,20 @@ class DataNode(object):
 
     self.sliceCachingBehavior = behavior
     self.sliceCache = None
+    return
 
   def clearSliceCache(self):
     self.sliceCache = None
+    return
 
   def hasDataForInterval(self, fromTime, untilTime):
     slices = list(self.slices)
     if not slices:
       return False
-
+      
+    # Why is this getting the last item in the list and first ? 
+    # Are these guaranteed to be in descending order ? 
+    # slices returns DataSlice objects.
     earliestData = slices[-1].startTime
     latestData = slices[0].endTime
 
@@ -309,6 +325,7 @@ class DataNode(object):
            ((untilTime is None) or (untilTime > earliestData))
 
   def read(self, fromTime, untilTime):
+    
     if self.timeStep is None:
       self.readMetadata()
 
@@ -320,12 +337,16 @@ class DataNode(object):
     resultValues = []
     earliestData = None
 
+    # TODO: slice is a global function, rename this var
+    # We are iterating over DataSlice objects here
     for slice in self.slices:
       # if the requested interval starts after the start of this slice
       if fromTime >= slice.startTime:
         try:
           series = slice.read(fromTime, untilTime)
         except NoData:
+          # Should this break processing, means we only look at one dataslice?
+          # it's a continue below
           break
 
         earliestData = series.startTime
@@ -436,6 +457,7 @@ class DataNode(object):
         break
 
     for sequence in needsEarlierSlice:
+      # TODO: what is sequence[0][0] returning
       slice = DataSlice.create(self, int(sequence[0][0]), self.timeStep)
       slice.write(sequence)
       self.sliceCache = None
