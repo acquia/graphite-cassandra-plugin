@@ -73,8 +73,11 @@ class DataTree(object):
 
   def hasNode(self, nodePath):
     """Returns whether the Ceres tree contains the given metric"""
-    
-    # TODO: check the cache.
+
+    existing = self._cache.get(nodePath)
+    if existing is not None:
+      return True
+
     log_info("DataTree.hasNode(): metadata.get(%s)" % (nodePath,))
     try:
       # faster to read a named column
