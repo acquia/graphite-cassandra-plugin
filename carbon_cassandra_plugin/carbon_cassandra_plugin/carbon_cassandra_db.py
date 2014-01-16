@@ -1,14 +1,17 @@
-import os
-import sys
-import json
-from itertools import izip
-from os import path
 from bisect import bisect_left
+from itertools import izip
+import json
+import os
+from os import path
+import sys
 from time import time
 
-from pycassa import ConnectionPool, ColumnFamily, NotFoundException
+import pycassa
 from pycassa.cassandra.ttypes import ConsistencyLevel
-from pycassa.system_manager import SystemManager, time
+
+import pycassa import ConnectionPool, ColumnFamily, NotFoundException
+from pycassa.cassandra.ttypes import ConsistencyLevel
+from pycassa.system_manager import SystemManager
 from pycassa.types import UTF8Type
 
 DEFAULT_TIMESTEP = 60
