@@ -7,10 +7,9 @@ from bisect import bisect_left
 from time import time
 
 from pycassa import ConnectionPool, ColumnFamily, NotFoundException
+from pycassa.cassandra.ttypes import ConsistencyLevel
 from pycassa.system_manager import SystemManager, time
 from pycassa.types import UTF8Type
-
-from node_cache import NodeCache
 
 DEFAULT_TIMESTEP = 60
 DEFAULT_SLICE_CACHING_BEHAVIOR = 'none'
@@ -20,23 +19,26 @@ import logging
 log_info = logging.getLogger("info").info
 
 class NodeCache(object):
-  """A simple caching object to store the datanode objects.
+  """A cache for :class:`DataNode` objects
+  
+  TODO: this may have retention policy and size limits.
   """
   def __init__(self):
-    self.cache = {}
+    self._cache = {}
 
-  def add(self, key, value):
-    self.cache[key] = value
+  def add(self, key, node):
+    """Adds or replaces the `node` in the cache.
+    """
+    self._cache[key] = node
 
   def get(self, key):
+    """Gets the node from the cache with `key` or None if no key exists.
+    """
+    
     try:
-      return self.cache[key]
-    except AttributeError:
-      raise AttributeError("Key %s not found." % key)
-
-  def keys(self):
-    return self.cache.keys()
-
+      return self._cache[key]
+    except (KeyError):
+      return None
 
 class DataTree(object):
   """Represents a tree of Ceres metrics contained within a single path on disk
@@ -46,11 +48,22 @@ class DataTree(object):
 
   See :func:`setDefaultSliceCachingBehavior` to adjust caching behavior
   """
-  def __init__(self, root, keyspace, server_list):
+  
+  def __init__(self, root, keyspace, server_list, 
+    read_consistency_level=ConsistencyLevel.ONE, 
+    write_consistency_level=ConsistencyLevel.ONE):
+    
     self.cassandra_connection = ConnectionPool(keyspace, server_list)
     self.root = root
-    self.nodeCache = NodeCache()
-
+    self._cache = NodeCache()
+    self.read_consistency_level = read_consistency_level
+    self.write_consistency_level = write_consistency_level
+    
+    #TODO: make CL configurable.
+    self._metadata_cf = ColumnFamily(self.cassandra_connection, 
+      'metadata', read_consistency_level=self.read_consistency_level, 
+      write_consistency_level=self.write_consistency_level)
+      
   def __repr__(self):
     return "<DataTree[0x%x]: %s>" % (id(self), self.root)
   __str__ = __repr__
@@ -73,13 +86,21 @@ class DataTree(object):
 
       :returns: :class:`DataNode` or `None`
     """
+    
+    existing = self._cache.get(nodePath)
+    if existing is not None:
+      return existing
+    
     log_info("DataTree.getNode(): metadata.get(%s)" % (nodePath,))
-    if nodePath not in self.nodeCache.keys():
-      datanode = DataNode(self, nodePath, nodePath)
-      # Add new DataNode to cache
-      self.nodeCache.add(nodePath, datanode)
-      return datanode
-    return self.nodeCache.get(nodePath)
+    try:
+      data = self._metadata_cf.get(nodePath, columns=["metadata"])
+    except (NotFoundException) as e:
+      raise RuntimeError("Node %s not found" % (nodePath))
+    
+    meta_data = json.loads(data["metadata"])
+    node = DataNode(self, meta_data, nodePath, nodePath)
+    self._cache.add(node.nodePath, node)
+    return node
 
   def createNode(self, nodePath, **properties):
     """Creates a new metric given a new metric name and optional per-node metadata
@@ -146,9 +167,10 @@ class DataTree(object):
 class DataNode(object):
   __slots__ = ('tree', 'nodePath', 'fsPath',
                'metadataFile', 'timeStep',
-               'sliceCache', 'sliceCachingBehavior', 'cassandra_connection')
+               'sliceCache', 'sliceCachingBehavior', 'cassandra_connection', 
+               '_meta_data')
 
-  def __init__(self, tree, nodePath, fsPath):
+  def __init__(self, tree, meta_data, nodePath, fsPath):
     self.tree = tree
     self.nodePath = nodePath
     # TODO Should we still pass in fsPath?
@@ -159,7 +181,10 @@ class DataNode(object):
     self.sliceCache = None
     self.sliceCachingBehavior = DEFAULT_SLICE_CACHING_BEHAVIOR
     self.cassandra_connection = tree.cassandra_connection
-
+    
+    self._meta_data = meta_data
+    self.timeStep = self._meta_data.get("timeStep")
+    
   def __repr__(self):
     return "<DataNode[0x%x]: %s>" % (id(self), self.nodePath)
   __str__ = __repr__
@@ -179,15 +204,16 @@ class DataNode(object):
     return [(slice.startTime, slice.endTime, slice.timeStep) for slice in self.slices]
 
   def readMetadata(self):
-    log_info("DataNode.readMetadata(): metadata.get(%s)" % (self.metadataFile,))
-    try:
-      client = ColumnFamily(self.cassandra_connection, 'metadata')
-      info = client.get(self.metadataFile)
-      metadata = json.loads(info['metadata'])
-      self.timeStep = int(metadata['timeStep'])
-      return metadata
-    except Exception as e:
-      raise Exception("DataNode.readMetadata error: %s" % str(e))
+    return self._meta_data
+     # log_info("DataNode.readMetadata(): metadata.get(%s)" % (self.metadataFile,))
+#     try:
+#       client = ColumnFamily(self.cassandra_connection, 'metadata')
+#       info = client.get(self.metadataFile)
+#       metadata = json.loads(info['metadata'])
+#       self.timeStep = int(metadata['timeStep'])
+#       return metadata
+#     except Exception as e:
+#       raise Exception("DataNode.readMetadata error: %s" % str(e))
 
   def writeMetadata(self, metadata):
     log_info("DataNode.writeMetadata(): metadata.insert(%s)" % (self.metadataFile,))
@@ -235,23 +261,27 @@ class DataNode(object):
         raise ValueError("invalid caching behavior configured '%s'" % self.sliceCachingBehavior)
 
   def readSlices(self):
-    slice_info = []
-    rowName = "{0}".format(self.nodePath)
-    log_info("DataNode.readSlices(): metadata.get(%s)" % (rowName,))
-    try:
-      client = ColumnFamily(self.cassandra_connection, 'metadata')
-      values = client.get(rowName)
-      metadata = json.loads(values['metadata'])
-      slice_info.append((int(metadata['startTime']), int(metadata['timeStep'])))
-      #for _, value in values:
-      #  startTime, timeStep = value.popitem()
-      #  slice_info.append((int(startTime), int(timeStep)))
-
-      #slice_info.sort(reverse=True)
-    except Exception:
-        pass
-
-    return slice_info
+    return [
+        (int(self._meta_data["startTime"]), 
+        int(self._meta_data["timeStep"]))
+    ]
+    # slice_info = []
+    # rowName = "{0}".format(self.nodePath)
+    # log_info("DataNode.readSlices(): metadata.get(%s)" % (rowName,))
+    # try:
+    #   client = ColumnFamily(self.cassandra_connection, 'metadata')
+    #   values = client.get(rowName)
+    #   metadata = json.loads(values['metadata'])
+    #   slice_info.append((int(metadata['startTime']), int(metadata['timeStep'])))
+    #   #for _, value in values:
+    #   #  startTime, timeStep = value.popitem()
+    #   #  slice_info.append((int(startTime), int(timeStep)))
+    # 
+    #   #slice_info.sort(reverse=True)
+    # except Exception:
+    #     pass
+    # 
+    # return slice_info
 
   def setSliceCachingBehavior(self, behavior):
     behavior = behavior.lower()
