@@ -78,7 +78,7 @@ class DataTree(object):
     log_info("DataTree.hasNode(): metadata.get(%s)" % (nodePath,))
     try:
       # faster to read a named column
-      self._metadata_cf.get(nodePath, columns=["metadta"])
+      self._metadata_cf.get(nodePath, columns=["metadata"])
       return True
     except (NotFoundException):
        return False
