@@ -1,12 +1,10 @@
 from bisect import bisect_left
 from itertools import izip
 import json
+import logging
 import os
-from os import path
-import sys
 
-from pycassa import ConsistencyLevel, ConnectionPool, ColumnFamily,\
-    NotFoundException
+from pycassa import ConnectionPool, ColumnFamily, NotFoundException
 from pycassa.cassandra.ttypes import ConsistencyLevel
 from pycassa.system_manager import SystemManager, time, SIMPLE_STRATEGY
 from pycassa.types import UTF8Type
@@ -15,7 +13,6 @@ DEFAULT_TIMESTEP = 60
 DEFAULT_SLICE_CACHING_BEHAVIOR = 'none'
 
 # dev code to log using the same logger as graphite web or carbon
-import logging
 log_info = logging.getLogger("info").info
 
 
@@ -114,7 +111,7 @@ class DataTree(object):
       data = self._metadata_cf.multiget(nodePathList, columns=["metadata"])
     except (NotFoundException) as e:
       # If one nodePath fails, the entire multiget call will fail
-      # TODO This is not defined.
+      # Pass in e.problem
       raise NodeNotFound("NodePathList %s not found" % (nodePathList))
 
     for nodePath in data.keys():
@@ -151,7 +148,7 @@ class DataTree(object):
   def getFilesystemPath(self, nodePath):
     """Get the on-disk path of a Ceres node given a metric name
     """
-    return path.join(self.root, nodePath.replace('.', os.sep))
+    return os.path.join(self.root, nodePath.replace('.', os.sep))
 
   def getNodePath(self, fsPath):
     """Get the metric name of a Ceres node given the on-disk path"""
@@ -190,7 +187,7 @@ class DataNode(object):
     self.tree = tree
     self.nodePath = nodePath
     self.fsPath = nodePath
-    #self.metadataFile = path.join(fsPath, '.ceres-node')
+    #self.metadataFile = os.path.join(fsPath, '.ceres-node')
     self.metadataFile = nodePath
     self.timeStep = None
     # sliceCache is sometimes a list of DataSlice objects and sometimes
@@ -297,23 +294,6 @@ class DataNode(object):
         (int(self._meta_data["startTime"]),
         int(self._meta_data["timeStep"]))
     ]
-    # slice_info = []
-    # rowName = "{0}".format(self.nodePath)
-    # log_info("DataNode.readSlices(): metadata.get(%s)" % (rowName,))
-    # try:
-    #   client = ColumnFamily(self.cassandra_connection, 'metadata')
-    #   values = client.get(rowName)
-    #   metadata = json.loads(values['metadata'])
-    #   slice_info.append((int(metadata['startTime']), int(metadata['timeStep'])))
-    #   #for _, value in values:
-    #   #  startTime, timeStep = value.popitem()
-    #   #  slice_info.append((int(startTime), int(timeStep)))
-    #
-    #   #slice_info.sort(reverse=True)
-    # except Exception:
-    #     pass
-    #
-    # return slice_info
 
   def setSliceCachingBehavior(self, behavior):
     behavior = behavior.lower()
@@ -553,9 +533,10 @@ class DataSlice(object):
     rowName = "{0}".format(self.node.fsPath)
     log_info("DataSlice.endTime(): "  + "ts{0}".format(self.timeStep) +  ".get(%s, reversed)" % (rowName,))
     try:
-      last_value = client.get(rowName, column_reversed=True, column_count=1)
-      # TODO What is timestamp?
-      return int(timestamp.keys()[-1])
+      # Return the last value
+      return client.get(rowName, column_reversed=True, column_count=1)
+      # TODO What is timestamp? last value?
+      #return int(timestamp.keys()[-1])
     except Exception:
       return time.time()
 
@@ -619,6 +600,7 @@ class DataSlice(object):
       except Exception as e:
         # Table doesn't exist, let's add it.
         log_info("DataSlice.write(): creating table %s." % tableName)
+        sys_manager = SystemManager(self.cassandra_connection.get_server_list())
         createColumnFamily(sys_manager, self.cassandra_connection.keyspace, tableName)
         client = ColumnFamily(self.cassandra_connection, tableName)
 
@@ -756,7 +738,6 @@ def setDefaultSliceCachingBehavior(behavior):
 
 def initializeTableLayout(keyspace, server_list=[]):
     try:
-      # TODO randomize server selection
       # TODO move functionality out of try statement
       cass_server = server_list[0]
       sys_manager = SystemManager(cass_server)
