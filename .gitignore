@@ -8,3 +8,5 @@ develop-eggs
 
 .DS_Store
 .vagrant/
+.ropeproject/
+1
