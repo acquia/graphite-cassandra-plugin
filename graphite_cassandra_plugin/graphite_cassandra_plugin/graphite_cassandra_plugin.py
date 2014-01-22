@@ -67,16 +67,24 @@ class CassandraFinder(object):
     query_path = query.pattern.replace('.*', '')
     log.info("CassandraFinder.find_nodes(): query_path changed to {0}".format(query_path))
 
-
+    leafs = []
+    # TODO Where is this getting called?
     for key in value.keys():
       if key == 'metric' and value[key] == 'true':
-        log.info("CassandraFinder.find_nodes(): value true, calling getNode with %s" % (query_path))
-        reader = CassandraReader(self.tree.getNode(query_path), query_path)
-        yield LeafNode(query_path, reader)
+        # We have a metric.
+        leafs.append(query_path)
       elif value[key] == 'metric':
-        log.info("find_nodes(): calling getNode with key %s" % (key,))
-        reader = CassandraReader(self.tree.getNode(key), key)
-        yield LeafNode(key, reader)
+        leafs.append(key)
       else:
         log.info("find_nodes(): BranchNode with key %s" % (key,))
         yield BranchNode(key)
+
+    if len(leafs) > 0:
+      # Don't make a call to Cassandra if there are no leafs.
+      log.info("find_nodes(): calling getNode with multiget %s" % (leafs,))
+      # Make a single multiget call to Cassandra with all leaf information
+      data_nodes = self.tree.getNode(leafs)
+
+      # 'path' here refers to either 'query_path' or 'key'
+      for path, node in data_nodes:
+        yield LeafNode(CassandraReader(node), path)

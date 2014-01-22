@@ -83,30 +83,44 @@ class DataTree(object):
     except (NotFoundException):
        return False
 
-  def getNode(self, nodePath):
-    """Returns a Ceres node given a metric name
+  def getNode(self, nodePathList):
+    """Returns a dictionary of Ceres nodes given metric names.
 
       Raises :exc:`NodeNotFound` if the node is not found.
-      
       :param nodePath: A metric name
 
-      :returns: :class:`DataNode`
+      :returns: {:class:`DataNode`} A dictionary of DataNodes
     """
+    # Container for all of the data nodes
+    data_nodes = {}
+
+    # Check if nodePath is a single string or a list of strings,
+    # we will make a multiget call to Cassandra either way.
+    if isinstance(nodePathList, basestring):
+      nodePathList = list(nodePathList)
+
+    # Return values if data nodes exist in cache.
+    for nodePath in nodePathList:
+      existing = self._cache.get(nodePath)
+      if existing is not None:
+        log.info("nodePath %s found in cache" % (nodePath,))
+        data_nodes[nodePath] = existing
+    return data_nodes
     
-    existing = self._cache.get(nodePath)
-    if existing is not None:
-      return existing
-    
-    log_info("DataTree.getNode(): metadata.get(%s)" % (nodePath,))
+    log_info("DataTree.getNode(): metadata.multiget(%s)" % (nodePathList,))
     try:
-      data = self._metadata_cf.get(nodePath, columns=["metadata"])
+      data = self._metadata_cf.multiget(nodePathList, columns=["metadata"])
     except (NotFoundException) as e:
-      raise NodeNotFound("Node %s not found" % (nodePath))
+      # If one nodePath fails, the entire multiget call will fail
+      raise NodeNotFound("NodePathList %s not found" % (nodePathList))
     
-    meta_data = json.loads(data["metadata"])
-    node = DataNode(self, meta_data, nodePath, nodePath)
-    self._cache.add(node.nodePath, node)
-    return node
+    for nodePath in data.keys():
+      meta_data = json.loads(data[nodePath]["metadata"])
+      node = DataNode(self, meta_data, nodePath)
+      self._cache.add(nodePath, node)
+      data_nodes[nodePath] = node
+
+    return data_nodes
 
 
   def createNode(self, nodePath, **properties):
@@ -141,7 +155,7 @@ class DataTree(object):
     return fsPath
 
   def getSliceInfo(self, query):
-    """ return all slice info for a given query
+    """ Return all slice info for a given query
       This needs to get a single level of the tree
       Think of it in terms of a glob:
         - * at the top of the tree should return all of the root-level nodes
@@ -169,7 +183,7 @@ class DataNode(object):
                'sliceCache', 'sliceCachingBehavior', 'cassandra_connection', 
                '_meta_data')
 
-  def __init__(self, tree, meta_data, nodePath, fsPath):
+  def __init__(self, tree, meta_data, nodePath, fsPath=None):
     self.tree = tree
     self.nodePath = nodePath
     self.fsPath = nodePath
