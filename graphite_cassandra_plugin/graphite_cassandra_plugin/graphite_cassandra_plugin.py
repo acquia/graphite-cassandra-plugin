@@ -1,5 +1,3 @@
-import os
-
 from graphite.node import LeafNode, BranchNode
 from graphite.intervals import Interval, IntervalSet
 from graphite.carbonlink import CarbonLink
@@ -60,7 +58,7 @@ class CassandraFinder(object):
     self.tree = DataTree(self.directory, keyspace, server_list)
 
   def find_nodes(self, query):
-    
+
     log.info("CassandraFinder.find_nodes(): query is: %s" % query.pattern)
     value = self.tree.getSliceInfo(query.pattern)
     log.info("CassandraFinder.find_nodes(): values are: {0}".format(value))
@@ -72,8 +70,10 @@ class CassandraFinder(object):
     for key in value.keys():
       if key == 'metric' and value[key] == 'true':
         # We have a metric.
+        log.info("find_nodes(): LeafNode with query_path %s " % leafs)
         leafs.append(query_path)
       elif value[key] == 'metric':
+        log.info("find_nodes(): LeafNode with key %s " % leafs)
         leafs.append(key)
       else:
         log.info("find_nodes(): BranchNode with key %s" % (key,))
@@ -86,5 +86,6 @@ class CassandraFinder(object):
       data_nodes = self.tree.getNode(leafs)
 
       # 'path' here refers to either 'query_path' or 'key'
-      for path, node in data_nodes:
-        yield LeafNode(CassandraReader(node), path)
+      for path, node in data_nodes.items():
+        reader = CassandraReader(node, path)
+        yield LeafNode(path, reader)
