@@ -32,11 +32,22 @@ class NodeCache(object):
   def get(self, key):
     """Gets the node from the cache with `key` or None if no key exists.
     """
-
     try:
       return self._cache[key]
     except (KeyError):
       return None
+
+  def multiget(self, keys):
+    """Returns multiple keys from the cache or None if no keys exist."""
+    di = {}
+    for key in keys:
+      existing = self.get(key)
+      if existing is not None:
+        di[key] = existing
+    # Don't return an empty dictionary if no keys exist.
+    if len(di.keys()) > 0:
+        return di
+    return None
 
 
 class DataTree(object):
@@ -90,28 +101,26 @@ class DataTree(object):
 
       :returns: {:class:`DataNode`} A dictionary of DataNodes
     """
-    # Container for all of the data nodes
-    data_nodes = {}
 
     # Check if nodePath is a single string or a list of strings,
     # we will make a multiget call to Cassandra either way.
     if isinstance(nodePathList, basestring):
       nodePathList = list(nodePathList)
 
-    # Return values if data nodes exist in cache.
-    for nodePath in nodePathList:
-      existing = self._cache.get(nodePath)
-      if existing is not None:
-        log_info("nodePath %s found in cache" % (nodePath,))
-        data_nodes[nodePath] = existing
-    return data_nodes
+    # Check cache for nodes before calling Cassandra.
+    data_nodes = self._cache.multiget(nodePathList)
+    if data_nodes is not None:
+        return data_nodes
+
+    # Otherwise, start at the beginning.
+    data_nodes = {}
+
 
     log_info("DataTree.getNode(): metadata.multiget(%s)" % (nodePathList,))
     try:
       data = self._metadata_cf.multiget(nodePathList, columns=["metadata"])
     except (NotFoundException) as e:
-      # If one nodePath fails, the entire multiget call will fail
-      # Pass in e.problem
+      log_info("DataTree.getNode() error: %s" % e.problem)
       raise NodeNotFound("NodePathList %s not found" % (nodePathList))
 
     for nodePath in data.keys():
