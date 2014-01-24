@@ -66,8 +66,7 @@ class CassandraFinder(object):
     log.info("CassandraFinder.find_nodes(): query_path changed to {0}".format(query_path))
 
     leafs = []
-    # TODO Where is this getting called?
-    for key in value.keys():
+    for key in value.iterkeys():
       if key == 'metric' and value[key] == 'true':
         # We have a metric.
         log.info("find_nodes(): LeafNode with query_path %s " % leafs)
@@ -86,6 +85,6 @@ class CassandraFinder(object):
       data_nodes = self.tree.getNode(leafs)
 
       # 'path' here refers to either 'query_path' or 'key'
-      for path, node in data_nodes.items():
+      for path, node in data_nodes.iteritems():
         reader = CassandraReader(node, path)
         yield LeafNode(path, reader)
