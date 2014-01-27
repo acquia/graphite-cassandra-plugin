@@ -544,10 +544,9 @@ class DataSlice(object):
     rowName = "{0}".format(self.node.fsPath)
     log_info("DataSlice.endTime(): "  + "ts{0}".format(self.timeStep) +  ".get(%s, reversed)" % (rowName,))
     try:
-      # Return the last value
-      return client.get(rowName, column_reversed=True, column_count=1)
       # TODO What is timestamp? last value?
-      #return int(timestamp.keys()[-1])
+      last_value = client.get(rowName, column_reversed=True, column_count=1)
+      return int(timestamp.keys()[-1])
     except Exception:
       return time.time()
 
