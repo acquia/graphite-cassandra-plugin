@@ -37,18 +37,6 @@ class NodeCache(object):
     except (KeyError):
       return None
 
-  def multiget(self, keys):
-    """Returns multiple keys from the cache or None if no keys exist."""
-    di = {}
-    for key in keys:
-      existing = self.get(key)
-      if existing is not None:
-        di[key] = existing
-    # Don't return an empty dictionary if no keys exist.
-    if len(di.keys()) > 0:
-        return di
-    return None
-
 
 class DataTree(object):
   """Represents a tree of Ceres metrics contained within a single path on disk
@@ -107,14 +95,20 @@ class DataTree(object):
     if isinstance(nodePathList, basestring):
       nodePathList = list(nodePathList)
 
-    # Check cache for nodes before calling Cassandra.
-    data_nodes = self._cache.multiget(nodePathList)
-    if data_nodes is not None:
-        return data_nodes
-
-    # Otherwise, start at the beginning.
     data_nodes = {}
+    # Check cache for nodes before calling Cassandra.
+    # Not all keys will be in the cache, so weed out the `None` values before
+    # passing on the dict.
+    for nodePath in nodePathList:
+      existing = self._cache.get(nodePath)
+      if existing is not None:
+        data_nodes[nodePath] = existing
+        # Remove nodePath from list if already in cache.
+        nodePathList.remove(nodePath)
 
+    if nodePathList == []:
+      # All queries were found in the cache, no need to make another call.
+      return data_nodes
 
     log_info("DataTree.getNode(): metadata.multiget(%s)" % (nodePathList,))
     try:
@@ -128,6 +122,10 @@ class DataTree(object):
       node = DataNode(self, meta_data, nodePath)
       self._cache.add(nodePath, node)
       data_nodes[nodePath] = node
+
+    # If there is only one result, return the single node.
+    if len(data_nodes.keys()) == 1:
+        return data_nodes.values()[0]
 
     return data_nodes
 
@@ -558,23 +556,23 @@ class DataSlice(object):
     timeOffset = int(fromTime) - self.startTime
 
     if timeOffset < 0:
-      raise InvalidRequest("requested time range ({0}, {1}) preceeds this slice: {2}".format(fromTime, untilTime, self.startTime))
+      raise InvalidRequest("Requested time range ({0}, {1}) preceeds this slice: {2}".format(fromTime, untilTime, self.startTime))
 
     values = []
     rowName = "{0}".format(self.node.fsPath)
-    log_info("DataSlice.read(): "  + "ts{0}".format(self.timeStep) +  ".get(%s)" % (rowName,))
+    log_info("DataSlice.read(): " + "ts{0}".format(self.timeStep) + ".get(%s)" % (rowName,))
     try:
       client = ColumnFamily(self.cassandra_connection, ("ts{0}".format(self.timeStep)))
       # TODO: Use Cassandra's maximum row limit here. This 1.99 billion is done
       # so that we don't limit the query at all
-      values = client.get(rowName, column_start="{0}".format(fromTime), column_finish="{0}".format(untilTime), column_count=1999999999)
-    except NotFoundException:
-      pass
+      log_info("client.get(%s)" % rowName)
+      values = client.get(rowName, column_start="{0}".format(fromTime),
+                          column_finish="{0}".format(untilTime),
+                          column_count=1999999999)
     except Exception as e:
       raise Exception('DataSlice.read error: %s' % str(e))
 
     if len(values) <= 0:
-      # TODO Not defined
       raise NoData()
 
     endTime = values.keys()[-1]
