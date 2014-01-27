@@ -148,8 +148,12 @@ class DataTree(object):
       :keyword nodePath: The metric name to write to
       :keyword datapoints: A list of datapoint tuples: (timestamp, value)
     """
-
-    self.getNode(nodePath).write(datapoints)
+    # TODO Should we throw an exception here?
+    node = self.getNode(nodePath)
+    if isinstance(node, DataNode):
+      node.write(datapoints)
+    else:
+      log_info("Node %s does not exist." % (nodePath,))
     return
 
   def getFilesystemPath(self, nodePath):
