@@ -38,6 +38,63 @@ class NodeCache(object):
       return None
 
 
+class ColumnFamilyCache(object):
+  """A cache for :class:`pycassa.ColumnFamily` objects. 
+  
+  These are expensive to create, so we want to avoid doing them in a hot 
+  code path.
+  
+  Also contains logic to create a tsXX CF used to store metric data if it 
+  does not exist. 
+  """
+  
+  def __init__(self, connectionPool, readCL, writeCL):
+    self.connectionPool = connectionPool
+    self.readCL = readCL
+    self.writeCL = writeCL
+    self._cache = {}
+  
+  def get(self, cfName):
+    """Get a non tsXX Column Family with ``cfName``.
+    
+    If the CF is not found on the server a 
+    :exc:`pycassa.NotFoundException` is raised.
+    
+    use :attr:`getTS` to get tsXX CF's. 
+    """
+    
+    existing = self._cache.get(cfName)
+    if existing is not None:
+      return existing
+    
+    # See if the CF exists.
+    ts_cf = None
+    # will raise pycassa.NotFoundException if not there
+    ts_cf = ColumnFamily(self.connectionPool, cfName, 
+      read_consistency_level=self.readCL,
+      write_consistency_level=self.writeCL)
+    
+    assert ts_cf is not None
+    self._cache[cfName] = ts_cf
+    return ts_cf
+    
+    
+  def getTS(self, cfName):
+    """Get the tsXX ColumnFamily with ``cfName``, creating the CF on the 
+    cluster if necessary.
+    """
+    
+    try:
+      return self.get(cfName)
+    except (NotFoundException) as e:
+      # we will try to create it. 
+      pass
+    
+    createTSColumnFamily(self.connectionPool.server_list, 
+      self.connectionPool.keyspace, cfName) 
+    return self.get(cfName)
+    
+  
 class DataTree(object):
   """Represents a tree of Ceres metrics contained within a single path on disk
   This is the primary Ceres API.
@@ -52,18 +109,10 @@ class DataTree(object):
     write_consistency_level=ConsistencyLevel.ONE):
 
     self.cassandra_connection = ConnectionPool(keyspace, server_list)
+    self.cfCache = ColumnFamilyCache(self.cassandra_connection, 
+      read_consistency_level, write_consistency_level)
     self.root = root
     self._cache = NodeCache()
-    self.read_consistency_level = read_consistency_level
-    self.write_consistency_level = write_consistency_level
-
-    #TODO: make CL configurable.
-    self._metadata_cf = ColumnFamily(self.cassandra_connection,
-      'metadata', read_consistency_level=self.read_consistency_level,
-      write_consistency_level=self.write_consistency_level)
-    self._data_tree_cf = ColumnFamily(self.cassandra_connection,
-      'data_tree_nodes', read_consistency_level=self.read_consistency_level,
-      write_consistency_level=self.write_consistency_level)
 
   def __repr__(self):
     return "<DataTree[0x%x]: %s>" % (id(self), self.root)
@@ -76,7 +125,7 @@ class DataTree(object):
     log_info("DataTree.hasNode(): metadata.get(%s)" % (nodePath,))
     try:
       # faster to read a named column
-      self._metadata_cf.get(nodePath, columns=["metadata"])
+      self.cfCache.get("metadata").get(nodePath, columns=["metadata"])
       return True
     except (NotFoundException):
        return False
@@ -113,7 +162,7 @@ class DataTree(object):
 
     log_info("DataTree.getNode(): metadata.multiget(%s)" % (searchNodes,))
     
-    rows = self._metadata_cf.multiget(searchNodes, columns=["metadata"])
+    rows = self.cfCache.get("metadata").multiget(searchNodes, columns=["metadata"])
     
     for rowKey, rowCols in rows.iteritems():
       node = DataNode(self, json.loads(rowCols["metadata"]), rowKey)
@@ -185,7 +234,7 @@ class DataTree(object):
 
     log_info("DataTree.getSliceInfo(): data_tree_nodes.get(%s)" % (query,))
     try:
-      return self._data_tree_cf.get(query)
+      return self.cfCache.get("data_tree_nodes").get(query)
     except (NotFoundException):
       # empty dict to say there is are no sub nodes.
       return {}
@@ -246,7 +295,7 @@ class DataNode(object):
     if not 'startTime' in metadata:
       metadata['startTime'] = int(time.time())
     self._meta_data.update(metadata)
-    self.tree._metadata_cf.insert(self.metadataFile,
+    self.tree.cfCache.get("metadata").insert(self.metadataFile,
       {'metadata': json.dumps(self._meta_data)})
 
   @property
@@ -508,10 +557,12 @@ class DataNode(object):
 
 
 class DataSlice(object):
-  __slots__ = ('node', 'cassandra_connection', 'startTime', 'timeStep', 'fsPath', 'retention')
+  __slots__ = ('node', 'cassandra_connection', 'startTime', 'timeStep', 
+    'fsPath', 'retention', "cfCache")
 
   def __init__(self, node, startTime, timeStep):
     self.node = node
+    self.cfCache = node.tree.cfCache
     self.cassandra_connection = node.cassandra_connection
     self.startTime = startTime
     self.timeStep = timeStep
@@ -611,20 +662,10 @@ class DataSlice(object):
     )
     tableName = "ts{0}".format(self.timeStep)
     
-    ts_cf = None
-    try:
-      ts_cf = ColumnFamily(self.cassandra_connection, tableName)
-    except (NotFoundException) as e:
-      pass
-    
-    if ts_cf is None:
-      log_info("DataSlice.write(): creating table %s." % tableName)
-      ts_cf = createTSColumnFamily(self.cassandra_connection.server_list, 
-        self.cassandra_connection.keyspace, tableName) 
-      ts_cf = ColumnFamily(self.cassandra_connection, tableName)
+    tsCF = self.cfCache.getTS(tableName)
       
     log_info("DataSlice.write() 1: %s.insert(%s)" % (tableName, rowName,))
-    ts_cf.insert(rowName, cols, ttl=self.retention)
+    tsCF.insert(rowName, cols, ttl=self.retention)
 
     # update the slide info for the timestamp lookup
     if not self.node.readMetadata().get("startTime"):
@@ -632,10 +673,10 @@ class DataSlice(object):
       meta["startTime"] = self.startTime
       self.node.writeMetadata(meta)
     
-    data_tree_cf = ColumnFamily(self.cassandra_connection, 'data_tree_nodes')
+    dataTreeCF = self.cfCache.get("data_tree_nodes")
     log_info("DataSlice.write() 4: data_tree_nodes.insert(%s)" % (rowName,))
-    data_tree_cf.insert(rowName, {'metric' : 'true'})
-    self.insert_metric(rowName, data_tree_cf, True)
+    dataTreeCF.insert(rowName, {'metric' : 'true'})
+    self.insert_metric(rowName, dataTreeCF, True)
     
     return
     
