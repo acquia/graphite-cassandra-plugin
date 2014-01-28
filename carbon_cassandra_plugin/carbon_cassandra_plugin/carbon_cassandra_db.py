@@ -603,53 +603,42 @@ class DataSlice(object):
       self.insert_metric(next_metric, client)
 
   def write(self, sequence):
+    
+    rowName = str(self.node.fsPath)
+    cols = dict(
+      (str(t), str(v))
+      for t, v in sequence
+    )
+    tableName = "ts{0}".format(self.timeStep)
+    
+    ts_cf = None
     try:
-      rowName = "{0}".format(self.node.fsPath)
-      tableName = "ts{0}".format(self.timeStep)
-
-      # Add the metric
-      try:
-        client = ColumnFamily(self.cassandra_connection, tableName)
-      except Exception as e:
-        # Table doesn't exist, let's add it.
-        log_info("DataSlice.write(): creating table %s." % tableName)
-        sys_manager = SystemManager(self.cassandra_connection.server_list)
-        createColumnFamily(sys_manager, self.cassandra_connection.keyspace, tableName)
-        client = ColumnFamily(self.cassandra_connection, tableName)
-
-      for t, v in sequence:
-        log_info("DataSlice.write() 1: %s.insert(%s)" % (tableName, rowName,))
-        client.insert(rowName, { str(t) : str(v) }, ttl=self.retention)
-    except Exception as e:
-      log_info("ERROR WRITING 1 %s" % (str(e),))
-      print e
-      raise Exception("DataSlice.write 1 error: {0}".format(e))
+      ts_cf = ColumnFamily(self.cassandra_connection, tableName)
+    except (NotFoundException) as e:
+      pass
+    
+    if ts_cf is None:
+      log_info("DataSlice.write(): creating table %s." % tableName)
+      ts_cf = createTSColumnFamily(self.cassandra_connection.server_list, 
+        self.cassandra_connection.keyspace, tableName) 
+      ts_cf = ColumnFamily(self.cassandra_connection, tableName)
+      
+    log_info("DataSlice.write() 1: %s.insert(%s)" % (tableName, rowName,))
+    ts_cf.insert(rowName, cols, ttl=self.retention)
 
     # update the slide info for the timestamp lookup
-    try:
-      if not self.node.readMetadata().get("startTime"):
-        meta = self.node.readMetadata()
-        meta["startTime"] = self.startTime
-        self.node.writeMetadata(meta)
-    except (Exception) as e:
-      log_info("ERROR WRITING 2 %s" % (str(e),))
-      print e
-      raise e
-
-    try:
-      client = ColumnFamily(self.cassandra_connection, 'data_tree_nodes')
-      # Strip off the metric name
-      #split_metric = '.'.join(self.node.fsPath.split('.')[0:-1])
-      #self.insert_metric(split_metric, client)
-      rowName = "{0}".format(self.node.fsPath)
-      log_info("DataSlice.write() 4: data_tree_nodes.insert(%s)" % (rowName,))
-      client.insert(rowName, {'metric' : 'true'})
-      self.insert_metric(rowName, client, True)
-    except Exception as e:
-      log_info("ERROR WRITING 3 %s" % (str(e),))
-      print e
-      raise Exception("DataSlice.write 3 error: {0}".format(str(e)))
-
+    if not self.node.readMetadata().get("startTime"):
+      meta = self.node.readMetadata()
+      meta["startTime"] = self.startTime
+      self.node.writeMetadata(meta)
+    
+    data_tree_cf = ColumnFamily(self.cassandra_connection, 'data_tree_nodes')
+    log_info("DataSlice.write() 4: data_tree_nodes.insert(%s)" % (rowName,))
+    data_tree_cf.insert(rowName, {'metric' : 'true'})
+    self.insert_metric(rowName, data_tree_cf, True)
+    
+    return
+    
   def __cmp__(self, other):
     return cmp(self.startTime, other.startTime)
 
@@ -769,6 +758,23 @@ def initializeTableLayout(keyspace, server_list=[]):
     except Exception as e:
       raise Exception("Error initalizing table layout: {0}".format(e))
 
+
+def createTSColumnFamily(servers, keyspace, tableName):
+  """Create a tsXX Column Family using one of the servers in the ``servers``
+  list and the ``keysapce`` and ``tableName``.
+  """
+  
+  for server in servers:
+    try: 
+      sysManager = SystemManager(server)
+      createColumnFamily(sysManager, keyspace, tableName)
+    except (Exception) as e:
+      # TODO: log when we know how to log 
+      continue
+    return None
+  
+  raise RuntimeError("Failed to create CF %s.%s using the server list %s" % (
+    keyspace, tableName, servers))
 
 def createColumnFamily(sys_manager, keyspace, tablename):
   """Create column family with UTF8Type comparators."""
