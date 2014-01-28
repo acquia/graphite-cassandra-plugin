@@ -1,5 +1,14 @@
+import traceback
+
 import carbon_cassandra_db
 
+"""Implements the Carbon API for providing a database. 
+
+This class should implement the interface defined in 
+carbon.database.TimeSeriesDatabase. We do not have a import here as this 
+class is also used by Graphite and we cannot import carbon from the
+running graphite process.
+"""
 class CarbonCassandraDatabase(object):
   plugin_name = 'cassandra'
 
@@ -25,7 +34,8 @@ class CarbonCassandraDatabase(object):
     try:
       self.tree.store(metric, datapoints)
     except Exception as e:
-      raise Exception("CarbonCassandraDatabase.write error: %s" % str(e))
+      raise Exception("CarbonCassandraDatabase.write error: %s" % (
+        traceback.format_exc(e),))
 
   def exists(self, metric):
     return self.tree.hasNode(metric)

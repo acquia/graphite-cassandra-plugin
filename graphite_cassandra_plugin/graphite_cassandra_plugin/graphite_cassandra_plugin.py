@@ -1,5 +1,3 @@
-import os
-
 from graphite.node import LeafNode, BranchNode
 from graphite.intervals import Interval, IntervalSet
 from graphite.carbonlink import CarbonLink
@@ -60,23 +58,33 @@ class CassandraFinder(object):
     self.tree = DataTree(self.directory, keyspace, server_list)
 
   def find_nodes(self, query):
-    
+
     log.info("CassandraFinder.find_nodes(): query is: %s" % query.pattern)
     value = self.tree.getSliceInfo(query.pattern)
     log.info("CassandraFinder.find_nodes(): values are: {0}".format(value))
     query_path = query.pattern.replace('.*', '')
     log.info("CassandraFinder.find_nodes(): query_path changed to {0}".format(query_path))
 
-
-    for key in value.keys():
+    leafs = []
+    for key in value.iterkeys():
       if key == 'metric' and value[key] == 'true':
-        log.info("CassandraFinder.find_nodes(): value true, calling getNode with %s" % (query_path))
-        reader = CassandraReader(self.tree.getNode(query_path), query_path)
-        yield LeafNode(query_path, reader)
+        # We have a metric.
+        log.info("find_nodes(): LeafNode with query_path %s " % leafs)
+        leafs.append(query_path)
       elif value[key] == 'metric':
-        log.info("find_nodes(): calling getNode with key %s" % (key,))
-        reader = CassandraReader(self.tree.getNode(key), key)
-        yield LeafNode(key, reader)
+        log.info("find_nodes(): LeafNode with key %s " % leafs)
+        leafs.append(key)
       else:
         log.info("find_nodes(): BranchNode with key %s" % (key,))
         yield BranchNode(key)
+
+    if len(leafs) > 0:
+      # Don't make a call to Cassandra if there are no leafs.
+      log.info("find_nodes(): calling getNode with multiget %s" % (leafs,))
+      # Make a single multiget call to Cassandra with all leaf information
+      data_nodes = self.tree.getNode(leafs)
+
+      # 'path' here refers to either 'query_path' or 'key'
+      for path, node in data_nodes.iteritems():
+        reader = CassandraReader(node, path)
+        yield LeafNode(path, reader)

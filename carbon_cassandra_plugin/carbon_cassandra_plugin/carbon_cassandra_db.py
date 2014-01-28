@@ -1,21 +1,109 @@
-import os
-import sys
-import json
-from itertools import izip
-from os import path
 from bisect import bisect_left
-from time import time
+from itertools import izip
+import json
+import logging
+import os
 
+import pycassa
 from pycassa import ConnectionPool, ColumnFamily, NotFoundException
-from pycassa.system_manager import SystemManager, time
+from pycassa.cassandra.ttypes import ConsistencyLevel
+from pycassa.system_manager import SystemManager, time, SIMPLE_STRATEGY
 from pycassa.types import UTF8Type
 
 DEFAULT_TIMESTEP = 60
 DEFAULT_SLICE_CACHING_BEHAVIOR = 'none'
 
 # dev code to log using the same logger as graphite web or carbon
-import logging
 log_info = logging.getLogger("info").info
+
+
+class NodeCache(object):
+  """A cache for :class:`DataNode` objects
+
+  TODO: this may have retention policy and size limits.
+  """
+  def __init__(self):
+    self._cache = {}
+
+  def add(self, key, node):
+    """Adds or replaces the `node` in the cache.
+    """
+    self._cache[key] = node
+
+  def get(self, key):
+    """Gets the node from the cache with `key` or None if no key exists.
+    """
+    try:
+      return self._cache[key]
+    except (KeyError):
+      return None
+
+
+class ColumnFamilyCache(object):
+  """A cache for :class:`pycassa.ColumnFamily` objects.
+
+  These are expensive to create, so we want to avoid doing them in a hot
+  code path.
+
+  Also contains logic to create a tsXX CF used to store metric data if it
+  does not exist.
+  """
+
+  def __init__(self, connectionPool, readCL, writeCL):
+    self.connectionPool = connectionPool
+    self.readCL = readCL
+    self.writeCL = writeCL
+    self._cache = {}
+
+  def batchMutator(self):
+    """Create a :clas:`pycassa.Mutator` to use for batch mutations.
+
+    The Mutator is constructed to use the connection pool and Consistency
+    Levels the cache is configured with."""
+
+    return pycassa.batch.Mutator(self.connectionPool,
+      write_consistency_level=self.writeCL)
+
+  def get(self, cfName):
+    """Get a non tsXX Column Family with ``cfName``.
+
+    If the CF is not found on the server a
+    :exc:`pycassa.NotFoundException` is raised.
+
+    use :attr:`getTS` to get tsXX CF's.
+    """
+
+    existing = self._cache.get(cfName)
+    if existing is not None:
+      return existing
+
+    # See if the CF exists.
+    ts_cf = None
+    # will raise pycassa.NotFoundException if not there
+    ts_cf = ColumnFamily(self.connectionPool, cfName,
+      read_consistency_level=self.readCL,
+      write_consistency_level=self.writeCL)
+
+    assert ts_cf is not None
+    self._cache[cfName] = ts_cf
+    return ts_cf
+
+
+  def getTS(self, cfName):
+    """Get the tsXX ColumnFamily with ``cfName``, creating the CF on the
+    cluster if necessary.
+    """
+
+    try:
+      return self.get(cfName)
+    except (NotFoundException) as e:
+      # we will try to create it.
+      pass
+
+    createTSColumnFamily(self.connectionPool.server_list,
+      self.connectionPool.keyspace, cfName)
+    return self.get(cfName)
+
 
 class DataTree(object):
   """Represents a tree of Ceres metrics contained within a single path on disk
@@ -25,10 +113,16 @@ class DataTree(object):
 
   See :func:`setDefaultSliceCachingBehavior` to adjust caching behavior
   """
-  def __init__(self, root, keyspace, server_list):
+
+  def __init__(self, root, keyspace, server_list,
+    read_consistency_level=ConsistencyLevel.ONE,
+    write_consistency_level=ConsistencyLevel.ONE):
+
     self.cassandra_connection = ConnectionPool(keyspace, server_list)
+    self.cfCache = ColumnFamilyCache(self.cassandra_connection,
+      read_consistency_level, write_consistency_level)
     self.root = root
-    self.nodeCache = {}
+    self._nodeCache = NodeCache()
 
   def __repr__(self):
     return "<DataTree[0x%x]: %s>" % (id(self), self.root)
@@ -36,68 +130,112 @@ class DataTree(object):
 
   def hasNode(self, nodePath):
     """Returns whether the Ceres tree contains the given metric"""
-    client = ColumnFamily(self.cassandra_connection, 'metadata')
+
+    # TODO: check the cache.
     log_info("DataTree.hasNode(): metadata.get(%s)" % (nodePath,))
     try:
-       value = client.get(nodePath, column_count=1)
-    except:
+      # faster to read a named column
+      self.cfCache.get("metadata").get(nodePath, columns=["metadata"])
+      return True
+    except (NotFoundException):
        return False
 
-    return value
-
   def getNode(self, nodePath):
-    """Returns a Ceres node given a metric name
+    """Get's one or more :cls:`DataNode` objects.
 
-      :param nodePath: A metric name
+    If `nodePath` is a string returns a single :cls:`DataNode`. Otherwise
+    `nodePath` is treated as an iterable and a dict of nodePath to
+    :cls:`DataNode` objects is returned.
 
-      :returns: :class:`DataNode` or `None`
+    Raises :exc:`NodeNotFound` is a single node was requested as it was not
+    found, or is multiple nodes are requested as not all nodes were found.
+
+    :param nodePath: DataNode to get.
+
+    :returns: A single :cls:`DataNode` or dict as above.
     """
-    #if nodePath not in self.nodeCache.keys():
-    #TODO WTF is this here?
-    log_info("DataTree.getNode(): metadata.get(%s)" % (nodePath,))
-    try:
-      client = ColumnFamily(self.cassandra_connection, 'metadata')
-      value = client.get(nodePath, column_count=1)
-    except Exception as e:
-      pass
-      #self.nodeCache[nodePath] = CeresNode(self, nodePath, nodePath)
-    return DataNode(self, nodePath, nodePath)
+    single = False
+    if isinstance(nodePath, basestring):
+      searchNodes = [nodePath,]
+      single = True
+    else:
+      searchNodes = nodePath
+
+    foundNodes = {}
+    for nodePath in searchNodes:
+      existing = self._nodeCache.get(nodePath)
+      if existing is not None:
+        foundNodes[nodePath] = existing
+        searchNodes.remove(nodePath)
+
+    if not searchNodes:
+      if single:
+        assert len(foundNodes) == 1
+        return foundNodes.values()[0]
+      else:
+        return foundNodes
+
+    log_info("DataTree.getNode(): metadata.multiget(%s)" % (searchNodes,))
+
+    rows = self.cfCache.get("metadata").multiget(searchNodes, columns=["metadata"])
+
+    for rowKey, rowCols in rows.iteritems():
+      node = DataNode(self, json.loads(rowCols["metadata"]), rowKey)
+      self._nodeCache.add(node.nodePath, node)
+      foundNodes[rowKey] = node
+
+    if len(searchNodes) == 1 and not foundNodes:
+      raise NodeNotFound("DataNode %s not found" % (searchNodes[0],))
+
+    if len(searchNodes) != len(foundNodes):
+      missingKeys = set(searchNodes).difference(set(foundNodes.keys()))
+      raise NodeNotFound("DataNodes %s not found" % (",".join(missingKeys)))
+
+    # If there is only one result, return the single node.
+    if single:
+      assert len(foundNodes) == 1
+      return foundNodes.values()[0]
+    else:
+      return foundNodes
+
 
   def createNode(self, nodePath, **properties):
-    """Creates a new metric given a new metric name and optional per-node metadata
+    """Creates a new metric given a new metric name and optional per-node
+      metadata
+
       :keyword nodePath: The new metric name.
-      :keyword \*\*properties: Arbitrary key-value properties to store as metric metadata.
+      :keyword \*\*properties: Arbitrary key-value properties to store as
+      metric metadata.
 
       :returns: :class:`DataNode`
     """
-    return DataNode.create(self, nodePath, **properties)
+    return DataNode.create(self, properties, nodePath)
 
   def store(self, nodePath, datapoints):
     """Store a list of datapoints associated with a metric
+
       :keyword nodePath: The metric name to write to
       :keyword datapoints: A list of datapoint tuples: (timestamp, value)
     """
+    # TODO Should we throw an exception here?
     node = self.getNode(nodePath)
-
-    if node is None:
-      raise NodeNotFound("The node '%s' does not exist in this tree" % nodePath)
-
-    node.write(datapoints)
+    if isinstance(node, DataNode):
+      node.write(datapoints)
+    else:
+      log_info("Node %s does not exist." % (nodePath,))
+    return
 
   def getFilesystemPath(self, nodePath):
-    """Get the on-disk path of a Ceres node given a metric name"""
-    #TODO: WTF is this doing? WHy the cassandra call?
-    client = ColumnFamily(self.cassandra_connection, 'metadata')
-    log_info("DataTree.getFilesystemPath(): metadata.get(%s)" % (nodePath,))
-    value = client.get(nodePath)
-    return path.join(self.root, nodePath.replace('.', os.sep))
+    """Get the on-disk path of a Ceres node given a metric name
+    """
+    return os.path.join(self.root, nodePath.replace('.', os.sep))
 
   def getNodePath(self, fsPath):
     """Get the metric name of a Ceres node given the on-disk path"""
     return fsPath
 
   def getSliceInfo(self, query):
-    """ return all slice info for a given query
+    """ Return all slice info for a given query
       This needs to get a single level of the tree
       Think of it in terms of a glob:
         - * at the top of the tree should return all of the root-level nodes
@@ -113,126 +251,130 @@ class DataTree(object):
 
     log_info("DataTree.getSliceInfo(): data_tree_nodes.get(%s)" % (query,))
     try:
-      client = ColumnFamily(self.cassandra_connection, 'data_tree_nodes')
-      #values = list(client.get_range(start=query, finish=query_end, row_count=100))
-      values = client.get(query)
-      return values
-    except NotFoundException:
+      return self.cfCache.get("data_tree_nodes").get(query)
+    except (NotFoundException):
+      # empty dict to say there is are no sub nodes.
       return {}
-    except Exception as e:
-      raise Exception("DataTree.getSliceInfo error %s" % str(e))
-
-    return {}
 
 
 class DataNode(object):
   __slots__ = ('tree', 'nodePath', 'fsPath',
                'metadataFile', 'timeStep',
-               'sliceCache', 'sliceCachingBehavior', 'cassandra_connection')
+               'sliceCache', 'sliceCachingBehavior', 'cassandra_connection',
+               '_meta_data', "cfCache")
 
-  def __init__(self, tree, nodePath, fsPath):
+  def __init__(self, tree, meta_data, nodePath, fsPath=None):
     self.tree = tree
+    self.cfCache = tree.cfCache
     self.nodePath = nodePath
     self.fsPath = nodePath
-    #self.metadataFile = path.join(fsPath, '.ceres-node')
+    #self.metadataFile = os.path.join(fsPath, '.ceres-node')
     self.metadataFile = nodePath
     self.timeStep = None
+    # sliceCache is sometimes a list of DataSlice objects and sometimes
+    # a single DataSlice object.
+    # TODO: Consider make it a list at all times.
     self.sliceCache = None
     self.sliceCachingBehavior = DEFAULT_SLICE_CACHING_BEHAVIOR
     self.cassandra_connection = tree.cassandra_connection
+
+    self._meta_data = meta_data
+    self.timeStep = self._meta_data.get("timeStep")
 
   def __repr__(self):
     return "<DataNode[0x%x]: %s>" % (id(self), self.nodePath)
   __str__ = __repr__
 
   @classmethod
-  def create(cls, tree, nodePath, **properties):
-    # Create the initial metadata
-    timeStep = properties['timeStep'] = properties.get('timeStep', DEFAULT_TIMESTEP)
-    node = cls(tree, nodePath, nodePath)
-    node.writeMetadata(properties)
-
+  def create(cls, tree, meta_data, nodePath):
+    """Construct a new DataNode with the `node_path` and `meta_data`
+    in the `tree` and store it.
+    """
+    meta_data.setdefault('timeStep', DEFAULT_TIMESTEP)
+    node = cls(tree, meta_data, nodePath, nodePath)
+    node.writeMetadata(meta_data)
     return node
 
 
   @property
   def slice_info(self):
-    return [(slice.startTime, slice.endTime, slice.timeStep) for slice in self.slices]
+    return [
+      (si.startTime, si.endTime, si.timeStep)
+      for si in self.slices
+    ]
 
   def readMetadata(self):
-    log_info("DataNode.readMetadata(): metadata.get(%s)" % (self.metadataFile,))
-    try:
-      client = ColumnFamily(self.cassandra_connection, 'metadata')
-      info = client.get(self.metadataFile)
-      metadata = json.loads(info['metadata'])
-      self.timeStep = int(metadata['timeStep'])
-      return metadata
-    except Exception as e:
-      raise Exception("DataNode.readMetadata error: %s" % str(e))
+    return self._meta_data
 
   def writeMetadata(self, metadata):
-    log_info("DataNode.writeMetadata(): metadata.insert(%s)" % (self.metadataFile,))
-    try:
-      if not 'startTime' in metadata:
-        metadata['startTime'] = int(time.time())
-      client = ColumnFamily(self.cassandra_connection, 'metadata')
-      client.insert(self.metadataFile, {'metadata': json.dumps(metadata)})
-    except Exception as e:
-      raise Exception('DataNode.writeMetadata error: %s' % str(e))
+    log_info("DataNode.writeMetadata(): metadata.insert(%s)" % (
+      self.metadataFile,))
+
+    if not 'startTime' in metadata:
+      metadata['startTime'] = int(time.time())
+    self._meta_data.update(metadata)
+    self.tree.cfCache.get("metadata").insert(self.metadataFile,
+      {'metadata': json.dumps(self._meta_data)})
 
   @property
   def slices(self):
+
+    # What happens when the sliceCache is null
     if self.sliceCache:
       if self.sliceCachingBehavior == 'all':
-        for slice in self.sliceCache:
-          yield slice
+        for data_slice in self.sliceCache:
+          yield data_slice
 
       elif self.sliceCachingBehavior == 'latest':
+        # TODO: This yielding the entire list, think it should return
+        # the last item in the list
         yield self.sliceCache
         infos = self.readSlices()
+        # TODO: Why does this skip the first item ?
         for info in infos[1:]:
+          # TODO: this is passing startTime and timeStep
+          # remove the * call and pass proper args
           yield DataSlice(self, *info)
 
     else:
       if self.sliceCachingBehavior == 'all':
-        self.sliceCache = [DataSlice(self, *info) for info in self.readSlices()]
-        for slice in self.sliceCache:
-          yield slice
+        # TODO: this is passing startTime and timeStep
+        # remove the * call and pass proper args
+        self.sliceCache = [
+          DataSlice(self, *info)
+          for info in self.readSlices()
+        ]
+        for data_slice in self.sliceCache:
+          yield data_slice
 
       elif self.sliceCachingBehavior == 'latest':
         infos = self.readSlices()
         if infos:
+          # TODO: this is passing startTime and timeStep
+          # remove the * call and pass proper args
           self.sliceCache = DataSlice(self, *infos[0])
           yield self.sliceCache
 
         for info in infos[1:]:
+          # TODO: this is passing startTime and timeStep
+          # remove the * call and pass proper args
           yield DataSlice(self, *info)
 
       elif self.sliceCachingBehavior == 'none':
         for info in self.readSlices():
+          # TODO: this is passing startTime and timeStep
+          # remove the * call and pass proper args
           yield DataSlice(self, *info)
 
       else:
-        raise ValueError("invalid caching behavior configured '%s'" % self.sliceCachingBehavior)
+        raise ValueError("invalid caching behavior configured '%s'" % (
+          self.sliceCachingBehavior,))
 
   def readSlices(self):
-    slice_info = []
-    rowName = "{0}".format(self.nodePath)
-    log_info("DataNode.readSlices(): metadata.get(%s)" % (rowName,))
-    try:
-      client = ColumnFamily(self.cassandra_connection, 'metadata')
-      values = client.get(rowName)
-      metadata = json.loads(values['metadata'])
-      slice_info.append((int(metadata['startTime']), int(metadata['timeStep'])))
-      #for _, value in values:
-      #  startTime, timeStep = value.popitem()
-      #  slice_info.append((int(startTime), int(timeStep)))
-
-      #slice_info.sort(reverse=True)
-    except Exception:
-        pass
-
-    return slice_info
+    return [
+        (int(self._meta_data["startTime"]),
+        int(self._meta_data["timeStep"]))
+    ]
 
   def setSliceCachingBehavior(self, behavior):
     behavior = behavior.lower()
@@ -241,15 +383,20 @@ class DataNode(object):
 
     self.sliceCachingBehavior = behavior
     self.sliceCache = None
+    return
 
   def clearSliceCache(self):
     self.sliceCache = None
+    return
 
   def hasDataForInterval(self, fromTime, untilTime):
     slices = list(self.slices)
     if not slices:
       return False
 
+    # Why is this getting the last item in the list and first ?
+    # Are these guaranteed to be in descending order ?
+    # slices returns DataSlice objects.
     earliestData = slices[-1].startTime
     latestData = slices[0].endTime
 
@@ -257,6 +404,7 @@ class DataNode(object):
            ((untilTime is None) or (untilTime > earliestData))
 
   def read(self, fromTime, untilTime):
+
     if self.timeStep is None:
       self.readMetadata()
 
@@ -268,12 +416,16 @@ class DataNode(object):
     resultValues = []
     earliestData = None
 
+    # TODO: slice is a global function, rename this var
+    # We are iterating over DataSlice objects here
     for slice in self.slices:
       # if the requested interval starts after the start of this slice
       if fromTime >= slice.startTime:
         try:
           series = slice.read(fromTime, untilTime)
         except NoData:
+          # Should this break processing, means we only look at one dataslice?
+          # it's a continue below
           break
 
         earliestData = series.startTime
@@ -319,6 +471,16 @@ class DataNode(object):
     return TimeSeriesData(fromTime, untilTime, self.timeStep, resultValues)
 
   def write(self, datapoints):
+    with self.cfCache.batchMutator() as batch:
+      return self._write_internal(datapoints, batch=batch)
+
+  def _write_internal(self, datapoints, batch=None):
+    """Write the ``datapoints`` to the db using the ``batch`` mutator.
+    """
+
+    if batch is None:
+      batch = self.cfCache.batchMutator()
+
     if self.timeStep is None:
       self.readMetadata()
 
@@ -352,14 +514,14 @@ class DataNode(object):
             sequenceWithinSlice = sequence[:boundaryIndex]
 
           try:
-            slice.write(sequenceWithinSlice)
+            slice.write(sequenceWithinSlice, batch=batch)
           except SliceGapTooLarge:
             newSlice = DataSlice.create(self, beginningTime, slice.timeStep)
-            newSlice.write(sequenceWithinSlice)
+            newSlice.write(sequenceWithinSlice, batch=batch)
             self.sliceCache = None
           except SliceDeleted:
             self.sliceCache = None
-            self.write(datapoints)  # recurse to retry
+            self._write_internal(datapoints, batch=batch)  # recurse to retry
             return
 
           break
@@ -371,7 +533,7 @@ class DataNode(object):
           sequenceWithinSlice = sequence[boundaryIndex:]
           leftover = sequence[:boundaryIndex]
           sequences.append(leftover)
-          slice.write(sequenceWithinSlice)
+          slice.write(sequenceWithinSlice, batch=batch)
 
         else:
           needsEarlierSlice.append(sequence)
@@ -384,9 +546,12 @@ class DataNode(object):
         break
 
     for sequence in needsEarlierSlice:
+      # TODO: what is sequence[0][0] returning
       slice = DataSlice.create(self, int(sequence[0][0]), self.timeStep)
-      slice.write(sequence)
+      slice.write(sequence, batch=batch)
       self.sliceCache = None
+    return
+
 
   def compact(self, datapoints):
     datapoints = sorted((int(timestamp), float(value))
@@ -422,10 +587,12 @@ class DataNode(object):
 
 
 class DataSlice(object):
-  __slots__ = ('node', 'cassandra_connection', 'startTime', 'timeStep', 'fsPath', 'retention')
+  __slots__ = ('node', 'cassandra_connection', 'startTime', 'timeStep',
+    'fsPath', 'retention', "cfCache")
 
   def __init__(self, node, startTime, timeStep):
     self.node = node
+    self.cfCache = node.tree.cfCache
     self.cassandra_connection = node.cassandra_connection
     self.startTime = startTime
     self.timeStep = timeStep
@@ -442,27 +609,34 @@ class DataSlice(object):
 
   @property
   def isEmpty(self):
-    count = 0
-    log_info("DataSlice.isEmpty(): " + "ts{0}".format(self.timeStep) + ".get(%s)" % (rowName,))
-    
+    """Returns True id the data slice does not contain any data, False
+    otherwise."""
+
+    key = str(self.node.fsPath)
+    tsCF = self.cfCache.getTS("ts{0}".format(self.timeStep))
+
     try:
-      client = ColumnFamily(self.cassandra_connection, ("ts{0}".format(self.timeStep)))
-      rowName = "{0}".format(self.node.fsPath)
-      count = client.get(rowName, column_count=1)
-    except Exception:
+      # will raise NotFoundExcpetion if there is no data, test result to be
+      # super sure
+      cols = tsCF.get(key, column_count=1)
+    except (NotFoundExcption):
       return True
-    return count == 0
+    return True if not (cols) else False
 
   @property
   def endTime(self):
-    client = ColumnFamily(self.cassandra_connection, ("ts{0}".format(self.timeStep)))
-    rowName = "{0}".format(self.node.fsPath)
-    log_info("DataSlice.endTime(): "  + "ts{0}".format(self.timeStep) +  ".get(%s, reversed)" % (rowName,))
+
+    key = str(self.node.fsPath)
+    tsCF = self.cfCache.getTS("ts{0}".format(self.timeStep))
+
     try:
-      last_value = client.get(rowName, column_reversed=True, column_count=1)
-      return int(timestamp.keys()[-1])
-    except Exception:
+      #TODO: do not use reversed, it has bad performance.
+      cols = tsCF.get(key, column_reversed=True, column_count=1)
+    except (NotFoundException):
       return time.time()
+
+    assert len(cols) == 1
+    return int(cols.keys()[-0])
 
   @classmethod
   def create(cls, node, startTime, timeStep):
@@ -470,109 +644,83 @@ class DataSlice(object):
     return slice
 
   def read(self, fromTime, untilTime):
+    """Return :cls:`TimeSeriesData` for this DataSlice, between ``fromTime``
+    and ``untilTime``
+    """
+
     timeOffset = int(fromTime) - self.startTime
 
     if timeOffset < 0:
-      raise InvalidRequest("requested time range ({0}, {1}) preceeds this slice: {2}".format(fromTime, untilTime, self.startTime))
+      raise InvalidRequest("Requested time range ({0}, {1}) preceeds this "\
+        "slice: {2}".format(fromTime, untilTime, self.startTime))
 
-    values = []
-    rowName = "{0}".format(self.node.fsPath)
-    log_info("DataSlice.read(): "  + "ts{0}".format(self.timeStep) +  ".get(%s)" % (rowName,))
-    try:
-      client = ColumnFamily(self.cassandra_connection, ("ts{0}".format(self.timeStep)))
-      # TODO: Use Cassandra's maximum row limit here. This 1.99 billion is done
-      # so that we don't limit the query at all
-      values = client.get(rowName, column_start="{0}".format(fromTime), column_finish="{0}".format(untilTime), column_count=1999999999)
-    except NotFoundException:
-      pass
-    except Exception as e:
-      raise Exception('DataSlice.read error: %s' % str(e))
+    key = str(self.node.fsPath)
+    tsCF = self.cfCache.getTS("ts{0}".format(self.timeStep))
+    #TODO: VERY BAD code here to request call columns
+    #get the columns in sensible buckets
 
-    if len(values) <= 0:
+    cols = tsCF.get(key, column_start="{0}".format(fromTime),
+                        column_finish="{0}".format(untilTime),
+                        column_count=1999999999)
+    if not cols:
       raise NoData()
 
-    endTime = values.keys()[-1]
-    #print '[DEBUG slice.read] startTime=%s fromTime=%s untilTime=%s' % (self.startTime, fromTime, untilTime)
-    #print '[DEBUG slice.read] timeInfo = (%s, %s, %s)' % (fromTime, endTime, self.timeStep)
-    #print '[DEBUG slice.read] values = %s' % str(values)
-    values = [float(x) for x in values.values()]
+    endTime = cols.keys()[-1]
+    values = [float(x) for x in cols.values()]
     return TimeSeriesData(fromTime, int(endTime), self.timeStep, values)
 
-  def check_for_metric_table(self, tablename=''):
-    cass_server = self.cassandra_connection.server_list[0]
-    keyspace = self.cassandra_connection.keyspace
+  def insert_metric(self, metric, isMetric=False, batch=None):
+    """Insert the ``metric`` into the data_tree_nodes CF to say it's a
+    metric as opposed to a non leaf node."""
 
-    sys_manager = SystemManager(cass_server)
-    log_info("DataSlice.check_for_metric_table(): sys_manager.get_keyspace_column_families(%s)" % (keyspace,))
-    cf_defs = sys_manager.get_keyspace_column_families(keyspace)
+    if batch is None:
+      batch = self.cfCache.batchMutator()
 
-    if tablename not in cf_defs.keys():
-      sys_manager.create_column_family(
-          keyspace,
-          tablename,
-          super=False,
-          comparator_type=UTF8Type(),
-          key_validation_class=UTF8Type(),
-          default_validation_class=UTF8Type()
-      )
-
-  def insert_metric(self, metric, client, isMetric=False):
     split = metric.split('.')
     if len(split) == 1:
-      log_info("DataSlice.insert_metric() 1: %s.insert(%s)" % (client.name, "root",))
-      client.insert('root', { metric : '' })
+      batch.insert(self.cfCache.get("data_tree_nodes"), 'root',
+        { metric : '' })
     else:
       next_metric = '.'.join(split[0:-1])
       metric_type =  'metric' if isMetric else ''
-      log_info("DataSlice.insert_metric() 2: %s.insert(%s)" % (client.name, next_metric,))
-      client.insert(next_metric, {'.'.join(split) : metric_type })
-      self.insert_metric(next_metric, client)
+      batch.insert(self.cfCache.get("data_tree_nodes"), next_metric,
+        {'.'.join(split) : metric_type })
+      self.insert_metric(next_metric, batch=batch)
+    return
 
-  def write(self, sequence):
-    try:
-      rowName = "{0}".format(self.node.fsPath)
-      tableName = "ts{0}".format(self.timeStep)
+  def write(self, sequence, batch=None):
+    """Write the ``sequence`` of metrics into the the tsXX CF for this
+    DataSlice, using the ``batch`` mutator.
+    """
 
-      # Make sure that the table exists
-      self.check_for_metric_table(tableName)
-      # Add the metric
-      client = ColumnFamily(self.cassandra_connection, tableName)
-      for t, v in sequence:
-        log_info("DataSlice.write() 1: %s.insert(%s)" % (tableName, rowName,))
-        client.insert(rowName, { str(t) : str(v) }, ttl=self.retention)
-    except Exception as e:
-      raise Exception("DataSlice.write 1 error: {0}".format(e))
+    if batch is None:
+      batch = self.cfCache.batchMutator()
+
+    key = str(self.node.fsPath)
+    cols = dict(
+      (str(t), str(v))
+      for t, v in sequence
+    )
+    tableName = "ts{0}".format(self.timeStep)
+
+    tsCF = self.cfCache.getTS(tableName)
+
+    log_info("DataSlice.write() 1: %s.insert(%s)" % (tableName, key,))
+    batch.insert(tsCF, key, cols, ttl=self.retention)
 
     # update the slide info for the timestamp lookup
-    #TODO: Evaluate if anything in this try block is necessary
-    try:
-      #client = ColumnFamily(self.cassandra_connection, 'metadata')
-      #client.insert(self.node.fsPath, { str(self.startTime) : str(self.timeStep)})
+    if not self.node.readMetadata().get("startTime"):
+      meta = self.node.readMetadata()
+      meta["startTime"] = self.startTime
+      # TODO: use the batch
+      self.node.writeMetadata(meta)
 
-      client = ColumnFamily(self.cassandra_connection, 'metadata')
-      rowName = "{0}".format(self.node.fsPath)
-      # TODO :This will eventually be replaced with something that hits cache
-      log_info("DataSlice.write() 2: metadata.get(%s)" % (rowName,))
-      metadata = client.get(rowName)
-      metadata = json.loads(metadata['metadata'])
-      if not 'startTime' in metadata:
-        metadata['startTime'] = self.startTime
-        log_info("DataSlice.write() 3: metadata.insert(%s)" % (rowName,))
-        client.insert(rowName, {'metadata' : json.dumps(metadata)})
-    except Exception as e:
-      raise Exception("DataSlice.write 2 error: {0}".format(str(e)))
+    dataTreeCF = self.cfCache.get("data_tree_nodes")
+    log_info("DataSlice.write() 4: data_tree_nodes.insert(%s)" % (key,))
+    batch.insert(dataTreeCF, key, {'metric' : 'true'})
+    self.insert_metric(key, True, batch=batch)
 
-    try:
-      client = ColumnFamily(self.cassandra_connection, 'data_tree_nodes')
-      # Strip off the metric name
-      #split_metric = '.'.join(self.node.fsPath.split('.')[0:-1])
-      #self.insert_metric(split_metric, client)
-      rowName = "{0}".format(self.node.fsPath)
-      log_info("DataSlice.write() 4: data_tree_nodes.insert(%s)" % (rowName,))
-      client.insert(rowName, {'metric' : 'true'})
-      self.insert_metric(rowName, client, True)
-    except Exception as e:
-      raise Exception("DataSlice.write 3 error: {0}".format(str(e)))
+    return
 
   def __cmp__(self, other):
     return cmp(self.startTime, other.startTime)
@@ -624,19 +772,31 @@ class CorruptNode(Exception):
 
 
 class NoData(Exception):
-  pass
+  def __init__(self, node, problem):
+    Exception.__init__(self, problem)
+    self.node = node
+    self.problem = problem
 
 
 class NodeNotFound(Exception):
-  pass
+  def __init__(self, node, problem):
+    Exception.__init__(self, problem)
+    self.node = node
+    self.problem = problem
 
 
 class NodeDeleted(Exception):
-  pass
+  def __init__(self, node, problem):
+    Exception.__init__(self, problem)
+    self.node = node
+    self.problem = problem
 
 
 class InvalidRequest(Exception):
-  pass
+  def __init__(self, node, problem):
+    Exception.__init__(self, problem)
+    self.node = node
+    self.problem = problem
 
 
 class SliceGapTooLarge(Exception):
@@ -644,8 +804,10 @@ class SliceGapTooLarge(Exception):
 
 
 class SliceDeleted(Exception):
-  pass
-
+  def __init__(self, node, problem):
+    Exception.__init__(self, problem)
+    self.node = node
+    self.problem = problem
 
 
 def setDefaultSliceCachingBehavior(behavior):
@@ -661,7 +823,6 @@ def setDefaultSliceCachingBehavior(behavior):
 
 def initializeTableLayout(keyspace, server_list=[]):
     try:
-      # TODO randomize server selection
       # TODO move functionality out of try statement
       cass_server = server_list[0]
       sys_manager = SystemManager(cass_server)
@@ -676,15 +837,35 @@ def initializeTableLayout(keyspace, server_list=[]):
       # Loop through and make sure that the necessary column families exist
       for tablename in ["data_tree_nodes", "metadata"]:
         if tablename not in cf_defs.keys():
-          sys_manager.create_column_family(
-              keyspace,
-              tablename,
-              super=False,
-              comparator_type=UTF8Type(),
-              key_validation_class=UTF8Type(),
-              default_validation_class=UTF8Type()
-          )
+          createColumnFamily(sys_manager, keyspace, tablename)
     except Exception as e:
       raise Exception("Error initalizing table layout: {0}".format(e))
 
 
+def createTSColumnFamily(servers, keyspace, tableName):
+  """Create a tsXX Column Family using one of the servers in the ``servers``
+  list and the ``keysapce`` and ``tableName``.
+  """
+
+  for server in servers:
+    try:
+      sysManager = SystemManager(server)
+      createColumnFamily(sysManager, keyspace, tableName)
+    except (Exception) as e:
+      # TODO: log when we know how to log
+      continue
+    return None
+
+  raise RuntimeError("Failed to create CF %s.%s using the server list %s" % (
+    keyspace, tableName, servers))
+
+def createColumnFamily(sys_manager, keyspace, tablename):
+  """Create column family with UTF8Type comparators."""
+  sys_manager.create_column_family(
+      keyspace,
+      tablename,
+      super=False,
+      comparator_type=UTF8Type(),
+      key_validation_class=UTF8Type(),
+      default_validation_class=UTF8Type()
+  )
