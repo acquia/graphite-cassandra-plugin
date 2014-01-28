@@ -112,7 +112,7 @@ class DataTree(object):
     self.cfCache = ColumnFamilyCache(self.cassandra_connection, 
       read_consistency_level, write_consistency_level)
     self.root = root
-    self._cache = NodeCache()
+    self._nodeCache = NodeCache()
 
   def __repr__(self):
     return "<DataTree[0x%x]: %s>" % (id(self), self.root)
@@ -154,7 +154,7 @@ class DataTree(object):
       
     foundNodes = {}
     for nodePath in searchNodes:
-      existing = self._cache.get(nodePath)
+      existing = self._nodeCache.get(nodePath)
       if existing is not None:
         foundNodes[nodePath] = existing
         searchNodes.remove(nodePath)
@@ -172,7 +172,7 @@ class DataTree(object):
     
     for rowKey, rowCols in rows.iteritems():
       node = DataNode(self, json.loads(rowCols["metadata"]), rowKey)
-      self._cache.add(node.nodePath, node)
+      self._nodeCache.add(node.nodePath, node)
       foundNodes[rowKey] = node
 
     if len(searchNodes) == 1 and not foundNodes:
