@@ -1,6 +1,5 @@
 from bisect import bisect_left
-from itertools import izip
-import json
+import itertools
 import logging
 import os
 
@@ -134,8 +133,8 @@ class DataTree(object):
     # TODO: check the cache.
     log_info("DataTree.hasNode(): metadata.get(%s)" % (nodePath,))
     try:
-      # faster to read a named column
-      self.cfCache.get("metadata").get(nodePath, columns=["metadata"])
+      # Faster to read a named column
+      self.cfCache.get("metadata").get(nodePath, columns=["timeStep"])
       return True
     except (NotFoundException):
        return False
@@ -177,10 +176,15 @@ class DataTree(object):
 
     log_info("DataTree.getNode(): metadata.multiget(%s)" % (searchNodes,))
 
-    rows = self.cfCache.get("metadata").multiget(searchNodes, columns=["metadata"])
+    client = self.cfCache.get("metadata")
+    rows = client.multiget(searchNodes, columns=['aggregationMethod',
+                                                 'retentions',
+                                                 'startTime',
+                                                 'timeStep',
+                                                 'xFilesFactor'])
 
     for rowKey, rowCols in rows.iteritems():
-      node = DataNode(self, json.loads(rowCols["metadata"]), rowKey)
+      node = DataNode(self, rowCols, rowKey)
       self._nodeCache.add(node.nodePath, node)
       foundNodes[rowKey] = node
 
@@ -258,6 +262,14 @@ class DataTree(object):
 
 
 class DataNode(object):
+  """Represents a single Ceres metric.
+
+    :param tree: The tree reference
+    :param meta_data: Metric metadata
+    :param nodePath:
+    :param fsPath:
+  """
+
   __slots__ = ('tree', 'nodePath', 'fsPath',
                'metadataFile', 'timeStep',
                'sliceCache', 'sliceCachingBehavior', 'cassandra_connection',
@@ -278,7 +290,8 @@ class DataNode(object):
     self.sliceCachingBehavior = DEFAULT_SLICE_CACHING_BEHAVIOR
     self.cassandra_connection = tree.cassandra_connection
 
-    self._meta_data = meta_data
+    # Convert columns into readable format.
+    self._meta_data = self.fromCols(meta_data)
     self.timeStep = self._meta_data.get("timeStep")
 
   def __repr__(self):
@@ -295,7 +308,6 @@ class DataNode(object):
     node.writeMetadata(meta_data)
     return node
 
-
   @property
   def slice_info(self):
     return [
@@ -307,14 +319,51 @@ class DataNode(object):
     return self._meta_data
 
   def writeMetadata(self, metadata):
+    """Write metadata out to metadata CF in key-value format."""
     log_info("DataNode.writeMetadata(): metadata.insert(%s)" % (
       self.metadataFile,))
 
     if not 'startTime' in metadata:
+      # Cut off partial seconds.
       metadata['startTime'] = int(time.time())
+
+    # Transform list of tuples into list
+    rets = list(itertools.chain.from_iterable(metadata['retentions']))
+    # Transform list into stringed list, and then CSV
+    metadata['retentions'] = ','.join(map(str, rets))
+
+    # Remap all metadata values into strings.
+    for key, value in metadata.iteritems():
+      metadata[key] = str(value)
+
     self._meta_data.update(metadata)
-    self.tree.cfCache.get("metadata").insert(self.metadataFile,
-      {'metadata': json.dumps(self._meta_data)})
+    self.tree.cfCache.get("metadata").insert(self.metadataFile, metadata)
+
+  def fromCols(self, cols):
+    """Return column values formatted in anticipated dict.
+      - timeStep: store as string, cast to int when read
+      - retentions: store as csv, split into tuples on reading. e.g. [[60,1440]] store as "60,1440"
+      - xFilesFactor: store as string, cast to double when read
+      - startTime: store as string, cast to int when read
+      - aggregationMethod: store as string
+    """
+
+    if isinstance(cols['retentions'], list):
+      # Columns are in correct format already.
+      # TODO Is fromCols() getting called multiple times?
+      return cols
+
+    cols['timeStep'] = int(cols['timeStep'])
+    cols['xFilesFactor'] = float(cols['xFilesFactor'])
+
+    # Convert csv into a list of ints
+    # "1,2,3,4" => ['1','2','3','4'] => [1,2,3,4]
+    retentions = map(int, cols['retentions'].split(','))
+    # Skip over each item in the list and pair them up
+    # [..] => [(1,2),(3,4)]
+    cols['retentions'] = zip(retentions[::2], retentions[1::2])
+
+    return cols
 
   @property
   def slices(self):
@@ -616,10 +665,10 @@ class DataSlice(object):
     tsCF = self.cfCache.getTS("ts{0}".format(self.timeStep))
 
     try:
-      # will raise NotFoundExcpetion if there is no data, test result to be
+      # will raise NotFoundException if there is no data, test result to be
       # super sure
       cols = tsCF.get(key, column_count=1)
-    except (NotFoundExcption):
+    except (NotFoundException):
       return True
     return True if not (cols) else False
 
@@ -741,7 +790,7 @@ class TimeSeriesData(object):
     return xrange(self.startTime, self.endTime, self.timeStep)
 
   def __iter__(self):
-    return izip(self.timestamps, self.values)
+    return itertools.izip(self.timestamps, self.values)
 
   def __len__(self):
     return len(self.values)
@@ -772,41 +821,39 @@ class CorruptNode(Exception):
 
 
 class NoData(Exception):
-  def __init__(self, node, problem):
+  def __init__(self, problem):
     Exception.__init__(self, problem)
-    self.node = node
     self.problem = problem
 
 
 class NodeNotFound(Exception):
-  def __init__(self, node, problem):
+  def __init__(self, problem):
     Exception.__init__(self, problem)
-    self.node = node
     self.problem = problem
 
 
 class NodeDeleted(Exception):
-  def __init__(self, node, problem):
+  def __init__(self, problem):
     Exception.__init__(self, problem)
-    self.node = node
     self.problem = problem
 
 
 class InvalidRequest(Exception):
-  def __init__(self, node, problem):
+  def __init__(self, problem):
     Exception.__init__(self, problem)
-    self.node = node
     self.problem = problem
 
 
 class SliceGapTooLarge(Exception):
   "For internal use only"
+  def __init__(self, problem):
+    Exception.__init__(self, problem)
+    self.problem = problem
 
 
 class SliceDeleted(Exception):
-  def __init__(self, node, problem):
+  def __init__(self, problem):
     Exception.__init__(self, problem)
-    self.node = node
     self.problem = problem
 
 
