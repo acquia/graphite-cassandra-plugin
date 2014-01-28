@@ -81,53 +81,56 @@ class DataTree(object):
     except (NotFoundException):
        return False
 
-  def getNode(self, nodePathList):
-    """Returns a dictionary of Ceres nodes given metric names.
+  def getNode(self, nodePath):
+    """Get's one or more :cls:`DataNode` objects. 
+    
+    If `nodePath` is a string returns a single :cls:`DataNode`. Otherwise
+    `nodePath` is treated as an iterable and a dict of nodePath to 
+    :cls:`DataNode` objects is returned.
 
-      Raises :exc:`NodeNotFound` if the node is not found.
-      :param nodePath: A metric name
+    Raises :exc:`NodeNotFound` is a single node was requested as it was not 
+    found, or is multiple nodes are requested as not all nodes were found.
+    
+    :param nodePath: DataNode to get.
 
-      :returns: {:class:`DataNode`} A dictionary of DataNodes
+    :returns: A single :cls:`DataNode` or dict as above.
     """
 
-    # Check if nodePath is a single string or a list of strings,
-    # we will make a multiget call to Cassandra either way.
-    if isinstance(nodePathList, basestring):
-      nodePathList = list(nodePathList)
-
-    data_nodes = {}
-    # Check cache for nodes before calling Cassandra.
-    # Not all keys will be in the cache, so weed out the `None` values before
-    # passing on the dict.
-    for nodePath in nodePathList:
+    if isinstance(nodePath, basestring):
+      searchNodes = [nodePath,] 
+    else:
+      searchNodes = nodePath
+      
+    foundNodes = {}
+    for nodePath in searchNodes:
       existing = self._cache.get(nodePath)
       if existing is not None:
-        data_nodes[nodePath] = existing
-        # Remove nodePath from list if already in cache.
-        nodePathList.remove(nodePath)
+        foundNodes[nodePath] = existing
+        searchNodes.remove(nodePath)
 
-    if nodePathList == []:
-      # All queries were found in the cache, no need to make another call.
-      return data_nodes
+    if not searchNodes:
+      return foundNodes.values()[0] if len(foundNodes) == 1 else foundNodes
 
-    log_info("DataTree.getNode(): metadata.multiget(%s)" % (nodePathList,))
-    try:
-      data = self._metadata_cf.multiget(nodePathList, columns=["metadata"])
-    except (NotFoundException) as e:
-      log_info("DataTree.getNode() error: %s" % e.problem)
-      raise NodeNotFound("NodePathList %s not found" % (nodePathList))
+    log_info("DataTree.getNode(): metadata.multiget(%s)" % (searchNodes,))
+    
+    rows = self._metadata_cf.multiget(searchNodes, columns=["metadata"])
+    
+    for rowKey, rowCols in rows.iteritems():
+      node = DataNode(self, json.loads(rowCols["metadata"]), rowKey)
+      self._cache.add(node.nodePath, node)
+      foundNodes[rowKey] = node
 
-    for nodePath in data.keys():
-      meta_data = json.loads(data[nodePath]["metadata"])
-      node = DataNode(self, meta_data, nodePath)
-      self._cache.add(nodePath, node)
-      data_nodes[nodePath] = node
-
+    if len(searchNodes) == 1 and not foundNodes:
+      raise NodeNotFound("DataNode %s not found" % (searchNodes[0],))
+    
+    if len(searchNodes) != len(foundNodes):
+      missingKeys = set(searchNodes).difference(set(foundNodes.keys()))
+      raise NodeNotFound("DataNodes %s not found" % (",".join(missingKeys)))
+      
     # If there is only one result, return the single node.
-    if len(data_nodes.keys()) == 1:
-        return data_nodes.values()[0]
-
-    return data_nodes
+    if len(foundNodes) == 1:
+        return foundNodes.values()[0]
+    return foundNodes
 
 
   def createNode(self, nodePath, **properties):
