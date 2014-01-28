@@ -40,71 +40,71 @@ class NodeCache(object):
 
 
 class ColumnFamilyCache(object):
-  """A cache for :class:`pycassa.ColumnFamily` objects. 
-  
-  These are expensive to create, so we want to avoid doing them in a hot 
+  """A cache for :class:`pycassa.ColumnFamily` objects.
+
+  These are expensive to create, so we want to avoid doing them in a hot
   code path.
-  
-  Also contains logic to create a tsXX CF used to store metric data if it 
-  does not exist. 
+
+  Also contains logic to create a tsXX CF used to store metric data if it
+  does not exist.
   """
-  
+
   def __init__(self, connectionPool, readCL, writeCL):
     self.connectionPool = connectionPool
     self.readCL = readCL
     self.writeCL = writeCL
     self._cache = {}
-  
+
   def batchMutator(self):
-    """Create a :clas:`pycassa.Mutator` to use for batch mutations. 
-    
-    The Mutator is constructed to use the connection pool and Consistency 
+    """Create a :clas:`pycassa.Mutator` to use for batch mutations.
+
+    The Mutator is constructed to use the connection pool and Consistency
     Levels the cache is configured with."""
-    
-    return pycassa.batch.Mutator(self.connectionPool, 
+
+    return pycassa.batch.Mutator(self.connectionPool,
       write_consistency_level=self.writeCL)
-    
+
   def get(self, cfName):
     """Get a non tsXX Column Family with ``cfName``.
-    
-    If the CF is not found on the server a 
+
+    If the CF is not found on the server a
     :exc:`pycassa.NotFoundException` is raised.
-    
-    use :attr:`getTS` to get tsXX CF's. 
+
+    use :attr:`getTS` to get tsXX CF's.
     """
-    
+
     existing = self._cache.get(cfName)
     if existing is not None:
       return existing
-    
+
     # See if the CF exists.
     ts_cf = None
     # will raise pycassa.NotFoundException if not there
-    ts_cf = ColumnFamily(self.connectionPool, cfName, 
+    ts_cf = ColumnFamily(self.connectionPool, cfName,
       read_consistency_level=self.readCL,
       write_consistency_level=self.writeCL)
-    
+
     assert ts_cf is not None
     self._cache[cfName] = ts_cf
     return ts_cf
-    
-    
+
+
   def getTS(self, cfName):
-    """Get the tsXX ColumnFamily with ``cfName``, creating the CF on the 
+    """Get the tsXX ColumnFamily with ``cfName``, creating the CF on the
     cluster if necessary.
     """
-    
+
     try:
       return self.get(cfName)
     except (NotFoundException) as e:
-      # we will try to create it. 
+      # we will try to create it.
       pass
-    
-    createTSColumnFamily(self.connectionPool.server_list, 
-      self.connectionPool.keyspace, cfName) 
+
+    createTSColumnFamily(self.connectionPool.server_list,
+      self.connectionPool.keyspace, cfName)
     return self.get(cfName)
-    
-  
+
+
 class DataTree(object):
   """Represents a tree of Ceres metrics contained within a single path on disk
   This is the primary Ceres API.
@@ -119,7 +119,7 @@ class DataTree(object):
     write_consistency_level=ConsistencyLevel.ONE):
 
     self.cassandra_connection = ConnectionPool(keyspace, server_list)
-    self.cfCache = ColumnFamilyCache(self.cassandra_connection, 
+    self.cfCache = ColumnFamilyCache(self.cassandra_connection,
       read_consistency_level, write_consistency_level)
     self.root = root
     self._nodeCache = NodeCache()
@@ -141,15 +141,15 @@ class DataTree(object):
        return False
 
   def getNode(self, nodePath):
-    """Get's one or more :cls:`DataNode` objects. 
-    
+    """Get's one or more :cls:`DataNode` objects.
+
     If `nodePath` is a string returns a single :cls:`DataNode`. Otherwise
-    `nodePath` is treated as an iterable and a dict of nodePath to 
+    `nodePath` is treated as an iterable and a dict of nodePath to
     :cls:`DataNode` objects is returned.
 
-    Raises :exc:`NodeNotFound` is a single node was requested as it was not 
+    Raises :exc:`NodeNotFound` is a single node was requested as it was not
     found, or is multiple nodes are requested as not all nodes were found.
-    
+
     :param nodePath: DataNode to get.
 
     :returns: A single :cls:`DataNode` or dict as above.
@@ -157,10 +157,10 @@ class DataTree(object):
     single = False
     if isinstance(nodePath, basestring):
       searchNodes = [nodePath,]
-      single = True 
+      single = True
     else:
       searchNodes = nodePath
-      
+
     foundNodes = {}
     for nodePath in searchNodes:
       existing = self._nodeCache.get(nodePath)
@@ -170,15 +170,15 @@ class DataTree(object):
 
     if not searchNodes:
       if single:
-        assert len(foundNodes) == 1 
-        return foundNodes.values()[0] 
+        assert len(foundNodes) == 1
+        return foundNodes.values()[0]
       else:
         return foundNodes
 
     log_info("DataTree.getNode(): metadata.multiget(%s)" % (searchNodes,))
-    
+
     rows = self.cfCache.get("metadata").multiget(searchNodes, columns=["metadata"])
-    
+
     for rowKey, rowCols in rows.iteritems():
       node = DataNode(self, json.loads(rowCols["metadata"]), rowKey)
       self._nodeCache.add(node.nodePath, node)
@@ -186,15 +186,15 @@ class DataTree(object):
 
     if len(searchNodes) == 1 and not foundNodes:
       raise NodeNotFound("DataNode %s not found" % (searchNodes[0],))
-    
+
     if len(searchNodes) != len(foundNodes):
       missingKeys = set(searchNodes).difference(set(foundNodes.keys()))
       raise NodeNotFound("DataNodes %s not found" % (",".join(missingKeys)))
-      
+
     # If there is only one result, return the single node.
     if single:
-      assert len(foundNodes) == 1 
-      return foundNodes.values()[0] 
+      assert len(foundNodes) == 1
+      return foundNodes.values()[0]
     else:
       return foundNodes
 
@@ -477,10 +477,10 @@ class DataNode(object):
   def _write_internal(self, datapoints, batch=None):
     """Write the ``datapoints`` to the db using the ``batch`` mutator.
     """
-    
+
     if batch is None:
       batch = self.cfCache.batchMutator()
-      
+
     if self.timeStep is None:
       self.readMetadata()
 
@@ -551,7 +551,7 @@ class DataNode(object):
       slice.write(sequence, batch=batch)
       self.sliceCache = None
     return
-    
+
 
   def compact(self, datapoints):
     datapoints = sorted((int(timestamp), float(value))
@@ -587,7 +587,7 @@ class DataNode(object):
 
 
 class DataSlice(object):
-  __slots__ = ('node', 'cassandra_connection', 'startTime', 'timeStep', 
+  __slots__ = ('node', 'cassandra_connection', 'startTime', 'timeStep',
     'fsPath', 'retention', "cfCache")
 
   def __init__(self, node, startTime, timeStep):
@@ -609,32 +609,32 @@ class DataSlice(object):
 
   @property
   def isEmpty(self):
-    """Returns True id the data slice does not contain any data, False 
+    """Returns True id the data slice does not contain any data, False
     otherwise."""
-    
+
     key = str(self.node.fsPath)
     tsCF = self.cfCache.getTS("ts{0}".format(self.timeStep))
-    
+
     try:
       # will raise NotFoundExcpetion if there is no data, test result to be
-      # super sure  
+      # super sure
       cols = tsCF.get(key, column_count=1)
-    except (NotFoundExcption): 
+    except (NotFoundExcption):
       return True
     return True if not (cols) else False
 
   @property
   def endTime(self):
-    
+
     key = str(self.node.fsPath)
     tsCF = self.cfCache.getTS("ts{0}".format(self.timeStep))
-    
+
     try:
       #TODO: do not use reversed, it has bad performance.
       cols = tsCF.get(key, column_reversed=True, column_count=1)
     except (NotFoundException):
       return time.time()
-    
+
     assert len(cols) == 1
     return int(cols.keys()[-0])
 
@@ -647,7 +647,7 @@ class DataSlice(object):
     """Return :cls:`TimeSeriesData` for this DataSlice, between ``fromTime``
     and ``untilTime``
     """
-    
+
     timeOffset = int(fromTime) - self.startTime
 
     if timeOffset < 0:
@@ -670,42 +670,42 @@ class DataSlice(object):
     return TimeSeriesData(fromTime, int(endTime), self.timeStep, values)
 
   def insert_metric(self, metric, isMetric=False, batch=None):
-    """Insert the ``metric`` into the data_tree_nodes CF to say it's a 
+    """Insert the ``metric`` into the data_tree_nodes CF to say it's a
     metric as opposed to a non leaf node."""
-    
+
     if batch is None:
       batch = self.cfCache.batchMutator()
-      
+
     split = metric.split('.')
     if len(split) == 1:
-      batch.insert(self.cfCache.get("data_tree_nodes"), 'root', 
+      batch.insert(self.cfCache.get("data_tree_nodes"), 'root',
         { metric : '' })
     else:
       next_metric = '.'.join(split[0:-1])
       metric_type =  'metric' if isMetric else ''
-      batch.insert(self.cfCache.get("data_tree_nodes"), next_metric, 
+      batch.insert(self.cfCache.get("data_tree_nodes"), next_metric,
         {'.'.join(split) : metric_type })
       self.insert_metric(next_metric, batch=batch)
     return
-    
+
   def write(self, sequence, batch=None):
-    """Write the ``sequence`` of metrics into the the tsXX CF for this 
+    """Write the ``sequence`` of metrics into the the tsXX CF for this
     DataSlice, using the ``batch`` mutator.
     """
-    
+
     if batch is None:
       batch = self.cfCache.batchMutator()
-      
+
     key = str(self.node.fsPath)
     cols = dict(
       (str(t), str(v))
       for t, v in sequence
     )
     tableName = "ts{0}".format(self.timeStep)
-    
+
     tsCF = self.cfCache.getTS(tableName)
-      
-    log_info("DataSlice.write() 1: %s.insert(%s)" % (tableName, rowName,))
+
+    log_info("DataSlice.write() 1: %s.insert(%s)" % (tableName, key,))
     batch.insert(tsCF, key, cols, ttl=self.retention)
 
     # update the slide info for the timestamp lookup
@@ -714,14 +714,14 @@ class DataSlice(object):
       meta["startTime"] = self.startTime
       # TODO: use the batch
       self.node.writeMetadata(meta)
-    
+
     dataTreeCF = self.cfCache.get("data_tree_nodes")
-    log_info("DataSlice.write() 4: data_tree_nodes.insert(%s)" % (rowName,))
+    log_info("DataSlice.write() 4: data_tree_nodes.insert(%s)" % (key,))
     batch.insert(dataTreeCF, key, {'metric' : 'true'})
     self.insert_metric(key, True, batch=batch)
-    
+
     return
-    
+
   def __cmp__(self, other):
     return cmp(self.startTime, other.startTime)
 
@@ -846,16 +846,16 @@ def createTSColumnFamily(servers, keyspace, tableName):
   """Create a tsXX Column Family using one of the servers in the ``servers``
   list and the ``keysapce`` and ``tableName``.
   """
-  
+
   for server in servers:
-    try: 
+    try:
       sysManager = SystemManager(server)
       createColumnFamily(sysManager, keyspace, tableName)
     except (Exception) as e:
-      # TODO: log when we know how to log 
+      # TODO: log when we know how to log
       continue
     return None
-  
+
   raise RuntimeError("Failed to create CF %s.%s using the server list %s" % (
     keyspace, tableName, servers))
 
