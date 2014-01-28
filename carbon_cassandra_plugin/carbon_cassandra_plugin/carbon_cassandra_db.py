@@ -258,6 +258,14 @@ class DataTree(object):
 
 
 class DataNode(object):
+  """Represents a single Ceres metric.
+
+    :param tree: The tree reference
+    :param meta_data: Metric metadata
+    :param nodePath:
+    :param fsPath:
+  """
+
   __slots__ = ('tree', 'nodePath', 'fsPath',
                'metadataFile', 'timeStep',
                'sliceCache', 'sliceCachingBehavior', 'cassandra_connection',
@@ -616,10 +624,10 @@ class DataSlice(object):
     tsCF = self.cfCache.getTS("ts{0}".format(self.timeStep))
 
     try:
-      # will raise NotFoundExcpetion if there is no data, test result to be
+      # will raise NotFoundException if there is no data, test result to be
       # super sure
       cols = tsCF.get(key, column_count=1)
-    except (NotFoundExcption):
+    except (NotFoundException):
       return True
     return True if not (cols) else False
 
