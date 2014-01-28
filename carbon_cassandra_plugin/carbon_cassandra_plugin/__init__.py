@@ -1,3 +1,5 @@
+import traceback
+
 import carbon_cassandra_db
 
 """Implements the Carbon API for providing a database. 
@@ -32,7 +34,8 @@ class CarbonCassandraDatabase(object):
     try:
       self.tree.store(metric, datapoints)
     except Exception as e:
-      raise Exception("CarbonCassandraDatabase.write error: %s" % str(e))
+      raise Exception("CarbonCassandraDatabase.write error: %s" % (
+        traceback.format_exc(e),))
 
   def exists(self, metric):
     return self.tree.hasNode(metric)
