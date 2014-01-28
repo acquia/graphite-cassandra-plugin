@@ -610,7 +610,7 @@ class DataSlice(object):
       except Exception as e:
         # Table doesn't exist, let's add it.
         log_info("DataSlice.write(): creating table %s." % tableName)
-        sys_manager = SystemManager(self.cassandra_connection.get_server_list())
+        sys_manager = SystemManager(self.cassandra_connection.server_list)
         createColumnFamily(sys_manager, self.cassandra_connection.keyspace, tableName)
         client = ColumnFamily(self.cassandra_connection, tableName)
 
