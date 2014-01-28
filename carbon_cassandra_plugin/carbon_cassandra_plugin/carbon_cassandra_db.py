@@ -145,8 +145,10 @@ class DataTree(object):
     :returns: A single :cls:`DataNode` or dict as above.
     """
 
+    single = False
     if isinstance(nodePath, basestring):
-      searchNodes = [nodePath,] 
+      searchNodes = [nodePath,]
+      single = True 
     else:
       searchNodes = nodePath
       
@@ -158,7 +160,11 @@ class DataTree(object):
         searchNodes.remove(nodePath)
 
     if not searchNodes:
-      return foundNodes.values()[0] if len(foundNodes) == 1 else foundNodes
+      if single:
+        assert len(foundNodes) == 1 
+        return foundNodes.values()[0] 
+      else:
+        return foundNodes
 
     log_info("DataTree.getNode(): metadata.multiget(%s)" % (searchNodes,))
     
@@ -177,9 +183,11 @@ class DataTree(object):
       raise NodeNotFound("DataNodes %s not found" % (",".join(missingKeys)))
       
     # If there is only one result, return the single node.
-    if len(foundNodes) == 1:
-        return foundNodes.values()[0]
-    return foundNodes
+    if single:
+      assert len(foundNodes) == 1 
+      return foundNodes.values()[0] 
+    else:
+      return foundNodes
 
 
   def createNode(self, nodePath, **properties):
