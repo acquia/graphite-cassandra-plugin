@@ -10,6 +10,9 @@
 
 echo "Make sure Cassandra is running on the host machine."
 
+echo "Stopping Carbon Daemon server."
+sudo -u www-data /opt/graphite/bin/carbon-daemon.py writer stop
+sleep 2;
 echo "Starting Carbon Daemon server."
 sudo -u www-data /opt/graphite/bin/carbon-daemon.py writer start
 
