@@ -303,7 +303,6 @@ class DataNode(object):
     node.writeMetadata(meta_data)
     return node
 
-
   @property
   def slice_info(self):
     return [
@@ -320,9 +319,14 @@ class DataNode(object):
 
     if not 'startTime' in metadata:
       metadata['startTime'] = int(time.time())
+
     self._meta_data.update(metadata)
     self.tree.cfCache.get("metadata").insert(self.metadataFile,
       {'metadata': json.dumps(self._meta_data)})
+
+  def fromCols(self, cols):
+    """Return column values formatted in anticipated JSON."""
+    return None
 
   @property
   def slices(self):
@@ -780,41 +784,39 @@ class CorruptNode(Exception):
 
 
 class NoData(Exception):
-  def __init__(self, node, problem):
+  def __init__(self, problem):
     Exception.__init__(self, problem)
-    self.node = node
     self.problem = problem
 
 
 class NodeNotFound(Exception):
-  def __init__(self, node, problem):
+  def __init__(self, problem):
     Exception.__init__(self, problem)
-    self.node = node
     self.problem = problem
 
 
 class NodeDeleted(Exception):
-  def __init__(self, node, problem):
+  def __init__(self, problem):
     Exception.__init__(self, problem)
-    self.node = node
     self.problem = problem
 
 
 class InvalidRequest(Exception):
-  def __init__(self, node, problem):
+  def __init__(self, problem):
     Exception.__init__(self, problem)
-    self.node = node
     self.problem = problem
 
 
 class SliceGapTooLarge(Exception):
   "For internal use only"
+  def __init__(self, problem):
+    Exception.__init__(self, problem)
+    self.problem = problem
 
 
 class SliceDeleted(Exception):
-  def __init__(self, node, problem):
+  def __init__(self, problem):
     Exception.__init__(self, problem)
-    self.node = node
     self.problem = problem
 
 
