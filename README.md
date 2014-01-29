@@ -18,9 +18,9 @@ Modify the db.conf file located at conf/carbon-daemons/writer/db.conf
     KEYSPACE = graphite
     SERVERS = 192.168.1.1:9160,192.168.1.2:9160,192.168.1.3:9160
 
-Start the daemon with:
-  
-    $ sudo -u www-data /opt/graphite/bin/carbon-daemon.py writer start 
+The carbon daemon is run from the mounted carbon source, start it with:
+
+    sudo -u www-data /vagrant/src/carbon/bin/carbon-daemon.py --config=/opt/graphite/conf/carbon-daemons/writer/ writer start
  
 ### Graphite
 
