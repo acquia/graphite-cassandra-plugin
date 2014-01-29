@@ -320,26 +320,37 @@ class DataNode(object):
       self.metadataFile,))
 
     if not 'startTime' in metadata:
-      #metadata['startTime'] = int(time.time())
-      metadata['startTime'] = str(time.time())
+      # Cut off partial seconds.
+      metadata['startTime'] = int(time.time())
 
     # Remap all metadata values into strings.
-    metadata = dict(zip(metadata.keys(), map(str, metadata.values())))
+    for key, value in metadata.iteritems():
+        metadata[key] = str(value)
 
     self._meta_data.update(metadata)
-
-
-    print(metadata)
-
-    client = self.tree.cfCache.get("metadata")
-    #try:
-    client.insert(self.metadataFile, metadata)
-    #except Exception:
-      #{'metadata': json.dumps(self._meta_data)})
+    self.tree.cfCache.get("metadata").insert(self.metadataFile, metadata)
 
   def fromCols(self, cols):
-    """Return column values formatted in anticipated JSON."""
-    return None
+    """Return column values formatted in anticipated dict.
+      - timeStep: store as string, cast to int when read
+      - retentions: store as csv, split into tuples on reading. e.g. [[60,1440]] store as "60,1440"
+      - xFilesFactor: store as string, cast to double when read
+      - startTime: store as string, cast to int when read
+      - aggregationMethod: store as string
+    """
+
+    cols['timeStep'] = int(cols['timeStep'])
+    cols['startTime'] = int(cols['startTime'])
+    cols['xFilesFactor'] = float(cols['xFilesFactor'])
+
+    # Convert csv into a list of ints
+    # "1,2,3,4" => ['1','2','3','4'] => [1,2,3,4]
+    retentions = map(int, cols['retentions'].split(','))
+    # Skip over each item in the list and pair them up
+    # [..] => [(1,2),(3,4)]
+    cols['retentions'] = zip(retentions[::2], retentions[1::2])
+
+    return cols
 
   @property
   def slices(self):
