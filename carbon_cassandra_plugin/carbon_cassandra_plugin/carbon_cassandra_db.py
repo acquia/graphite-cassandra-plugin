@@ -180,7 +180,8 @@ class DataTree(object):
     rows = self.cfCache.get("metadata").multiget(searchNodes, columns=["metadata"])
 
     for rowKey, rowCols in rows.iteritems():
-      node = DataNode(self, json.loads(rowCols["metadata"]), rowKey)
+      #node = DataNode(self, json.loads(rowCols["metadata"]), rowKey)
+      node = DataNode(self, rowCols, rowKey)
       self._nodeCache.add(node.nodePath, node)
       foundNodes[rowKey] = node
 
@@ -314,15 +315,27 @@ class DataNode(object):
     return self._meta_data
 
   def writeMetadata(self, metadata):
+    """Write metadata out to metadata CF in key-value format."""
     log_info("DataNode.writeMetadata(): metadata.insert(%s)" % (
       self.metadataFile,))
 
     if not 'startTime' in metadata:
-      metadata['startTime'] = int(time.time())
+      #metadata['startTime'] = int(time.time())
+      metadata['startTime'] = str(time.time())
+
+    # Remap all metadata values into strings.
+    metadata = dict(zip(metadata.keys(), map(str, metadata.values())))
 
     self._meta_data.update(metadata)
-    self.tree.cfCache.get("metadata").insert(self.metadataFile,
-      {'metadata': json.dumps(self._meta_data)})
+
+
+    print(metadata)
+
+    client = self.tree.cfCache.get("metadata")
+    #try:
+    client.insert(self.metadataFile, metadata)
+    #except Exception:
+      #{'metadata': json.dumps(self._meta_data)})
 
   def fromCols(self, cols):
     """Return column values formatted in anticipated JSON."""
