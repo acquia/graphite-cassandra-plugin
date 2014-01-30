@@ -1,6 +1,5 @@
 from bisect import bisect_left
-from itertools import izip
-import json
+import itertools
 import logging
 import os
 
@@ -177,10 +176,14 @@ class DataTree(object):
 
     log_info("DataTree.getNode(): metadata.multiget(%s)" % (searchNodes,))
 
-    rows = self.cfCache.get("metadata").multiget(searchNodes, columns=["metadata"])
+    client = self.cfCache.get("metadata")
+    rows = client.multiget(searchNodes, columns=['aggregationMethod'
+                                                 'retentions',
+                                                 'startTime',
+                                                 'timeStep',
+                                                 'xFilesFactor'])
 
     for rowKey, rowCols in rows.iteritems():
-      #node = DataNode(self, json.loads(rowCols["metadata"]), rowKey)
       node = DataNode(self, rowCols, rowKey)
       self._nodeCache.add(node.nodePath, node)
       foundNodes[rowKey] = node
@@ -287,7 +290,8 @@ class DataNode(object):
     self.sliceCachingBehavior = DEFAULT_SLICE_CACHING_BEHAVIOR
     self.cassandra_connection = tree.cassandra_connection
 
-    self._meta_data = meta_data
+    # Convert columns into readable format.
+    self._meta_data = self.fromCols(meta_data)
     self.timeStep = self._meta_data.get("timeStep")
 
   def __repr__(self):
@@ -323,6 +327,11 @@ class DataNode(object):
       # Cut off partial seconds.
       metadata['startTime'] = int(time.time())
 
+    # Transform list of tuples into list
+    rets = list(itertools.chain.from_iterable(metadata['retentions']))
+    # Transform list into stringed list, and then CSV
+    metadata['retentions'] = ','.join(map(str, rets))
+
     # Remap all metadata values into strings.
     for key, value in metadata.iteritems():
         metadata[key] = str(value)
@@ -340,7 +349,6 @@ class DataNode(object):
     """
 
     cols['timeStep'] = int(cols['timeStep'])
-    cols['startTime'] = int(cols['startTime'])
     cols['xFilesFactor'] = float(cols['xFilesFactor'])
 
     # Convert csv into a list of ints
@@ -777,7 +785,7 @@ class TimeSeriesData(object):
     return xrange(self.startTime, self.endTime, self.timeStep)
 
   def __iter__(self):
-    return izip(self.timestamps, self.values)
+    return itertools.izip(self.timestamps, self.values)
 
   def __len__(self):
     return len(self.values)
