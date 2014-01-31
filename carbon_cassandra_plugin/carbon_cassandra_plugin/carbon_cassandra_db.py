@@ -133,8 +133,8 @@ class DataTree(object):
     # TODO: check the cache.
     log_info("DataTree.hasNode(): metadata.get(%s)" % (nodePath,))
     try:
-      # faster to read a named column
-      self.cfCache.get("metadata").get(nodePath, columns=["metadata"])
+      # Faster to read a named column
+      self.cfCache.get("metadata").get(nodePath, columns=["timeStep"])
       return True
     except (NotFoundException):
        return False
@@ -177,7 +177,7 @@ class DataTree(object):
     log_info("DataTree.getNode(): metadata.multiget(%s)" % (searchNodes,))
 
     client = self.cfCache.get("metadata")
-    rows = client.multiget(searchNodes, columns=['aggregationMethod'
+    rows = client.multiget(searchNodes, columns=['aggregationMethod',
                                                  'retentions',
                                                  'startTime',
                                                  'timeStep',
@@ -334,7 +334,7 @@ class DataNode(object):
 
     # Remap all metadata values into strings.
     for key, value in metadata.iteritems():
-        metadata[key] = str(value)
+      metadata[key] = str(value)
 
     self._meta_data.update(metadata)
     self.tree.cfCache.get("metadata").insert(self.metadataFile, metadata)
@@ -347,6 +347,11 @@ class DataNode(object):
       - startTime: store as string, cast to int when read
       - aggregationMethod: store as string
     """
+
+    if isinstance(cols['retentions'], list):
+      # Columns are in correct format already.
+      # TODO Is fromCols() getting called multiple times?
+      return cols
 
     cols['timeStep'] = int(cols['timeStep'])
     cols['xFilesFactor'] = float(cols['xFilesFactor'])
