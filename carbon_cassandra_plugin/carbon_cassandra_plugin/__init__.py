@@ -44,7 +44,7 @@ class CarbonCassandraDatabase(object):
 
   def exists(self, metric):
     try:
-      self.tree.hasNode(metric)
+      return self.tree.hasNode(metric)
     except (Exception) as e:
       raise RuntimeError("CarbonCassandraDatabase.exists error: %s" % (
         traceback.format_exc(e),))
