@@ -276,11 +276,8 @@ class DataNode(object):
   __slots__ = ('tree', 'nodePath', 'fsPath',
                'metadataFile', 'timeStep',
                'sliceCache', 'sliceCachingBehavior', 'cassandra_connection',
-               '_meta_data', "cfCache", "_definedColumns", "_deserialise", 
+               '_meta_data', "cfCache", "_deserialise", 
                "_serialise")
-
-  _definedColumns=['aggregationMethod', 'retentions', 'startTime','timeStep',
-    'xFilesFactor']
 
   _deserialise = {
     "aggregationMethod" : lambda x : x,
@@ -333,15 +330,15 @@ class DataNode(object):
 
   @classmethod
   def fromDB(cls, tree, nodePaths):
-    """Read the nodes for the `nodePaths` from the DB and return a list of
-    :cls:`DataNode`s.
+    """Read the nodes for the `nodePaths` list from the DB and return a 
+    list of :cls:`DataNode`s.
     """
     
     rows = tree.cfCache.get("metadata").multiget(nodePaths, 
-      columns=cls._definedColumns )
+      columns=cls._deserialise.keys())
     
     def _unknownCol(x):
-      raise RuntimeError("Cannot deserilaise unknown collumn %s" % (x))
+      raise RuntimeError("Cannot deserilaise unknown column %s" % (x))
       
     nodes = []
     for rowKey, rowCols in rows.iteritems():
@@ -355,6 +352,8 @@ class DataNode(object):
     
   @classmethod
   def exists(cls, tree, nodePath):
+    """Returns True if the node at `nodepath` exists, False otherwise.
+    """
     
     try:
       # Faster to read a named column
@@ -362,7 +361,6 @@ class DataNode(object):
       return True
     except (NotFoundException):
        return False
-    
     
   @property
   def slice_info(self):
