@@ -152,22 +152,24 @@ class DataTree(object):
       single = True
     else:
       searchNodes = list(nodePath)
-
+    
+    missingNodes = []
     foundNodes = {}
     for path in searchNodes:
       existing = self._nodeCache.get(path)
-      if existing is not None:
+      if existing is None:
+        missingNodes.append(path)
+      else:
         foundNodes[path] = existing
-        searchNodes.remove(path)
 
-    if not searchNodes:
+    if not missingNodes:
       if single:
         assert len(foundNodes) == 1
         return foundNodes.values()[0]
       else:
         return foundNodes
       
-    for node in DataNode.fromDB(self, searchNodes):
+    for node in DataNode.fromDB(self, missingNodes):
       self._nodeCache.add(node.nodePath, node)
       foundNodes[node.nodePath] = node
 
