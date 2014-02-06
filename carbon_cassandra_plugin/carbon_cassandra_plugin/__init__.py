@@ -8,6 +8,11 @@ This class should implement the interface defined in
 carbon.database.TimeSeriesDatabase. We do not have a import here as this 
 class is also used by Graphite and we cannot import carbon from the
 running graphite process.
+
+Not that carbon does a bad job of handing errors from here, it normally 
+just prints "database write operation failed". So exceptions raised from here
+append traceback information to make debugging easier.
+
 """
 class CarbonCassandraDatabase(object):
   plugin_name = 'cassandra'
@@ -33,27 +38,45 @@ class CarbonCassandraDatabase(object):
   def write(self, metric, datapoints):
     try:
       self.tree.store(metric, datapoints)
-    except Exception as e:
-      raise Exception("CarbonCassandraDatabase.write error: %s" % (
+    except (Exception) as e:
+      raise RuntimeError("CarbonCassandraDatabase.write error: %s" % (
         traceback.format_exc(e),))
 
   def exists(self, metric):
-    return self.tree.hasNode(metric)
+    try:
+      self.tree.hasNode(metric)
+    except (Exception) as e:
+      raise RuntimeError("CarbonCassandraDatabase.exists error: %s" % (
+        traceback.format_exc(e),))
 
   def create(self, metric, **options):
-    # convert argument naming convention
-    options['retentions'] = options.pop('retentions')
-    options['timeStep'] = options['retentions'][0][0]
-    options['xFilesFactor'] = options.pop('xfilesfactor')
-    options['aggregationMethod'] = options.pop('aggregation-method')
-    self.tree.createNode(metric, **options)
+
+    try:
+      # convert argument naming convention
+      options['retentions'] = options.pop('retentions')
+      options['timeStep'] = options['retentions'][0][0]
+      options['xFilesFactor'] = options.pop('xfilesfactor')
+      options['aggregationMethod'] = options.pop('aggregation-method')
+      self.tree.createNode(metric, **options)
+    except (Exception) as e:
+      raise RuntimeError("CarbonCassandraDatabase.create error: %s" % (
+        traceback.format_exc(e),))
 
   def get_metadata(self, metric, key):
-    return self.tree.getNode(metric).readMetadata()[key]
+
+    try:
+      return self.tree.getNode(metric).readMetadata()[key]
+    except (Exception) as e:
+      raise RuntimeError("CarbonCassandraDatabase.get_metadata error: %s" % (
+        traceback.format_exc(e),))
 
   def set_metadata(self, metric, key, value):
-    node = self.tree.getNode(metric)
-    metadata = node.readMetadata()
-    metadata[key] = value
-    node.writeMetadata(metadata)
 
+    try:
+      node = self.tree.getNode(metric)
+      metadata = node.readMetadata()
+      metadata[key] = value
+      node.writeMetadata(metadata)
+    except (Exception) as e:
+      raise RuntimeError("CarbonCassandraDatabase.set_metadata error: %s" % (
+        traceback.format_exc(e),))
