@@ -244,6 +244,26 @@ class DataTree(object):
       return {}
 
 
+def _retentionsFromCSV(csv):
+    """Parse the command separated ints in `csv` into a list of tuples
+    
+    Used to deserialise the retention policy.
+    """
+    
+    ints = map(int, csv.split(','))
+    return zip(ints[::2], ints[1::2])
+  
+def _retentionsToCSV(retentions):
+    """Parse the list of int tuples [(1,2),] into a comma separated string
+    
+    used to serialise the retention policy
+    """
+    
+    return ",".join(
+      str(i)
+      for i in itertools.chain.from_iterable(retentions)
+    )
+    
 class DataNode(object):
   """Represents a single Ceres metric.
 
@@ -256,11 +276,28 @@ class DataNode(object):
   __slots__ = ('tree', 'nodePath', 'fsPath',
                'metadataFile', 'timeStep',
                'sliceCache', 'sliceCachingBehavior', 'cassandra_connection',
-               '_meta_data', "cfCache", "_definedColumns")
+               '_meta_data', "cfCache", "_definedColumns", "_deserialise", 
+               "_serialise")
 
   _definedColumns=['aggregationMethod', 'retentions', 'startTime','timeStep',
     'xFilesFactor']
 
+  _deserialise = {
+    "aggregationMethod" : lambda x : x,
+    "retentions" :  _retentionsFromCSV,
+    "startTime" : lambda x : int(x),
+    "timeStep" : lambda x : int(x),
+    "xFilesFactor" : lambda x : float(x),
+  }
+
+  _serialise = {
+    "aggregationMethod" : lambda x : x,
+    "retentions" :  _retentionsToCSV,
+    "startTime" : lambda x : str(x),
+    "timeStep" : lambda x : str(x),
+    "xFilesFactor" : lambda x : str(x),
+  }
+  
   def __init__(self, tree, meta_data, nodePath, fsPath=None):
     self.tree = tree
     self.cfCache = tree.cfCache
@@ -277,7 +314,7 @@ class DataNode(object):
     self.cassandra_connection = tree.cassandra_connection
 
     # Convert columns into readable format.
-    self._meta_data = self.fromCols(meta_data)
+    self._meta_data = meta_data
     self.timeStep = self._meta_data.get("timeStep")
 
   def __repr__(self):
@@ -302,11 +339,20 @@ class DataNode(object):
     
     rows = tree.cfCache.get("metadata").multiget(nodePaths, 
       columns=cls._definedColumns )
-    return [
-      cls(tree, rowCols, rowKey)
-      for rowKey, rowCols in rows.iteritems()
-    ]
-
+    
+    def _unknownCol(x):
+      raise RuntimeError("Cannot deserilaise unknown collumn %s" % (x))
+      
+    nodes = []
+    for rowKey, rowCols in rows.iteritems():
+      
+      metadata = {
+        colName : cls._deserialise.get(colName, _unknownCol)(colValue)
+        for colName, colValue in rowCols.iteritems()
+      }
+      nodes.append(cls(tree, metadata, rowKey))
+    return nodes
+    
   @classmethod
   def exists(cls, tree, nodePath):
     
@@ -334,44 +380,17 @@ class DataNode(object):
     if not 'startTime' in metadata:
       # Cut off partial seconds.
       metadata['startTime'] = int(time.time())
-
-    # Transform list of tuples into list
-    rets = list(itertools.chain.from_iterable(metadata['retentions']))
-    # Transform list into stringed list, and then CSV
-    metadata['retentions'] = ','.join(map(str, rets))
-
-    # Remap all metadata values into strings.
-    for key, value in metadata.iteritems():
-      metadata[key] = str(value)
-
     self._meta_data.update(metadata)
-    self.tree.cfCache.get("metadata").insert(self.metadataFile, metadata)
-
-  def fromCols(self, cols):
-    """Return column values formatted in anticipated dict.
-      - timeStep: store as string, cast to int when read
-      - retentions: store as csv, split into tuples on reading. e.g. [[60,1440]] store as "60,1440"
-      - xFilesFactor: store as string, cast to double when read
-      - startTime: store as string, cast to int when read
-      - aggregationMethod: store as string
-    """
-
-    if isinstance(cols['retentions'], list):
-      # Columns are in correct format already.
-      # TODO Is fromCols() getting called multiple times?
-      return cols
-
-    cols['timeStep'] = int(cols['timeStep'])
-    cols['xFilesFactor'] = float(cols['xFilesFactor'])
-
-    # Convert csv into a list of ints
-    # "1,2,3,4" => ['1','2','3','4'] => [1,2,3,4]
-    retentions = map(int, cols['retentions'].split(','))
-    # Skip over each item in the list and pair them up
-    # [..] => [(1,2),(3,4)]
-    cols['retentions'] = zip(retentions[::2], retentions[1::2])
-
-    return cols
+    
+    def _unknownCol(x):
+      raise RuntimeError("Cannot deserilaise unknown collumn %s" % (x))
+      
+    cols = {
+      metaName : self._serialise.get(metaName, _unknownCol)(metaValue)
+      for metaName, metaValue in self._meta_data.iteritems()
+    }
+    
+    self.tree.cfCache.get("metadata").insert(self.nodePath, cols)
 
   @property
   def slices(self):
