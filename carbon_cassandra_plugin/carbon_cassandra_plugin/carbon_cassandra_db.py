@@ -12,10 +12,6 @@ from pycassa.types import UTF8Type
 DEFAULT_TIMESTEP = 60
 DEFAULT_SLICE_CACHING_BEHAVIOR = 'none'
 
-# dev code to log using the same logger as graphite web or carbon
-log_info = logging.getLogger("info").info
-
-
 class NodeCache(object):
   """A cache for :class:`DataNode` objects
 
@@ -129,15 +125,11 @@ class DataTree(object):
 
   def hasNode(self, nodePath):
     """Returns whether the Ceres tree contains the given metric"""
-
-    # TODO: check the cache.
-    log_info("DataTree.hasNode(): metadata.get(%s)" % (nodePath,))
-    try:
-      # Faster to read a named column
-      self.cfCache.get("metadata").get(nodePath, columns=["timeStep"])
+    
+    existing = self._nodeCache.get(nodePath)
+    if existing is not None:
       return True
-    except (NotFoundException):
-       return False
+    return DataNode.exists(self, nodePath)
 
   def getNode(self, nodePath):
     """Get's one or more :cls:`DataNode` objects.
@@ -153,19 +145,20 @@ class DataTree(object):
 
     :returns: A single :cls:`DataNode` or dict as above.
     """
+    
     single = False
     if isinstance(nodePath, basestring):
       searchNodes = [nodePath,]
       single = True
     else:
-      searchNodes = nodePath
+      searchNodes = list(nodePath)
 
     foundNodes = {}
-    for nodePath in searchNodes:
-      existing = self._nodeCache.get(nodePath)
+    for path in searchNodes:
+      existing = self._nodeCache.get(path)
       if existing is not None:
-        foundNodes[nodePath] = existing
-        searchNodes.remove(nodePath)
+        foundNodes[path] = existing
+        searchNodes.remove(path)
 
     if not searchNodes:
       if single:
@@ -173,20 +166,10 @@ class DataTree(object):
         return foundNodes.values()[0]
       else:
         return foundNodes
-
-    log_info("DataTree.getNode(): metadata.multiget(%s)" % (searchNodes,))
-
-    client = self.cfCache.get("metadata")
-    rows = client.multiget(searchNodes, columns=['aggregationMethod',
-                                                 'retentions',
-                                                 'startTime',
-                                                 'timeStep',
-                                                 'xFilesFactor'])
-
-    for rowKey, rowCols in rows.iteritems():
-      node = DataNode(self, rowCols, rowKey)
+      
+    for node in DataNode.fromDB(self, searchNodes):
       self._nodeCache.add(node.nodePath, node)
-      foundNodes[rowKey] = node
+      foundNodes[node.nodePath] = node
 
     if len(searchNodes) == 1 and not foundNodes:
       raise NodeNotFound("DataNode %s not found" % (searchNodes[0],))
@@ -223,10 +206,9 @@ class DataTree(object):
     """
     # TODO Should we throw an exception here?
     node = self.getNode(nodePath)
-    if isinstance(node, DataNode):
-      node.write(datapoints)
-    else:
-      log_info("Node %s does not exist." % (nodePath,))
+    assert node is not None, "Attempt to store data to unknown node %s" % (
+      nodePath)
+    node.write(datapoints)
     return
 
   def getFilesystemPath(self, nodePath):
@@ -253,7 +235,6 @@ class DataTree(object):
     else:
       query = query.replace('.*', '')
 
-    log_info("DataTree.getSliceInfo(): data_tree_nodes.get(%s)" % (query,))
     try:
       return self.cfCache.get("data_tree_nodes").get(query)
     except (NotFoundException):
@@ -273,7 +254,10 @@ class DataNode(object):
   __slots__ = ('tree', 'nodePath', 'fsPath',
                'metadataFile', 'timeStep',
                'sliceCache', 'sliceCachingBehavior', 'cassandra_connection',
-               '_meta_data', "cfCache")
+               '_meta_data', "cfCache", "_definedColumns")
+
+  _definedColumns=['aggregationMethod', 'retentions', 'startTime','timeStep',
+    'xFilesFactor']
 
   def __init__(self, tree, meta_data, nodePath, fsPath=None):
     self.tree = tree
@@ -308,6 +292,30 @@ class DataNode(object):
     node.writeMetadata(meta_data)
     return node
 
+  @classmethod
+  def fromDB(cls, tree, nodePaths):
+    """Read the nodes for the `nodePaths` from the DB and return a list of
+    :cls:`DataNode`s.
+    """
+    
+    rows = tree.cfCache.get("metadata").multiget(nodePaths, 
+      columns=cls._definedColumns )
+    return [
+      cls(tree, rowCols, rowKey)
+      for rowKey, rowCols in rows.iteritems()
+    ]
+
+  @classmethod
+  def exists(cls, tree, nodePath):
+    
+    try:
+      # Faster to read a named column
+      tree.cfCache.get("metadata").get(nodePath, columns=["timeStep"])
+      return True
+    except (NotFoundException):
+       return False
+    
+    
   @property
   def slice_info(self):
     return [
@@ -320,8 +328,6 @@ class DataNode(object):
 
   def writeMetadata(self, metadata):
     """Write metadata out to metadata CF in key-value format."""
-    log_info("DataNode.writeMetadata(): metadata.insert(%s)" % (
-      self.metadataFile,))
 
     if not 'startTime' in metadata:
       # Cut off partial seconds.
@@ -754,7 +760,6 @@ class DataSlice(object):
 
     tsCF = self.cfCache.getTS(tableName)
 
-    log_info("DataSlice.write() 1: %s.insert(%s)" % (tableName, key,))
     batch.insert(tsCF, key, cols, ttl=self.retention)
 
     # update the slide info for the timestamp lookup
@@ -765,7 +770,6 @@ class DataSlice(object):
       self.node.writeMetadata(meta)
 
     dataTreeCF = self.cfCache.get("data_tree_nodes")
-    log_info("DataSlice.write() 4: data_tree_nodes.insert(%s)" % (key,))
     batch.insert(dataTreeCF, key, {'metric' : 'true'})
     self.insert_metric(key, True, batch=batch)
 
