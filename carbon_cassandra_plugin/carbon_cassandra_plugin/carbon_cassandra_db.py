@@ -546,15 +546,12 @@ class DataNode(object):
 
   def write(self, datapoints):
     with self.cfCache.batchMutator() as batch:
-      return self._write_internal(datapoints, batch=batch)
+      return self._write_internal(datapoints, batch)
 
-  def _write_internal(self, datapoints, batch=None):
+  def _write_internal(self, datapoints, batch):
     """Write the ``datapoints`` to the db using the ``batch`` mutator.
     """
-
-    if batch is None:
-      batch = self.cfCache.batchMutator()
-
+      
     if self.timeStep is None:
       self.readMetadata()
 
@@ -595,7 +592,7 @@ class DataNode(object):
             self.sliceCache = None
           except SliceDeleted:
             self.sliceCache = None
-            self._write_internal(datapoints, batch=batch)  # recurse to retry
+            self._write_internal(datapoints, batch)  # recurse to retry
             return
 
           break
@@ -746,10 +743,12 @@ class DataSlice(object):
   def insert_metric(self, metric, isMetric=False, batch=None):
     """Insert the ``metric`` into the data_tree_nodes CF to say it's a
     metric as opposed to a non leaf node."""
-
+    
+    myBatch = False
     if batch is None:
       batch = self.cfCache.batchMutator()
-
+      myBatch = True
+      
     split = metric.split('.')
     if len(split) == 1:
       batch.insert(self.cfCache.get("data_tree_nodes"), 'root',
@@ -760,38 +759,44 @@ class DataSlice(object):
       batch.insert(self.cfCache.get("data_tree_nodes"), next_metric,
         {'.'.join(split) : metric_type })
       self.insert_metric(next_metric, batch=batch)
+    
+    if myBatch:
+      batch.send()
     return
 
   def write(self, sequence, batch=None):
     """Write the ``sequence`` of metrics into the the tsXX CF for this
     DataSlice, using the ``batch`` mutator.
     """
-
+    
+    myBatch = False
     if batch is None:
       batch = self.cfCache.batchMutator()
-
+      myBatch = True
+    
+    # Write the data points to the tsXX table
     key = str(self.node.fsPath)
     cols = dict(
       (str(t), str(v))
       for t, v in sequence
     )
-    tableName = "ts{0}".format(self.timeStep)
-
-    tsCF = self.cfCache.getTS(tableName)
-
+    tsCF = self.cfCache.getTS("ts{0}".format(self.timeStep))
     batch.insert(tsCF, key, cols, ttl=self.retention)
-
-    # update the slide info for the timestamp lookup
+    
+    # if we do not have a start time for this metric write one
     if not self.node.readMetadata().get("startTime"):
       meta = self.node.readMetadata()
       meta["startTime"] = self.startTime
       # TODO: use the batch
       self.node.writeMetadata(meta)
-
+    
+    # Make sure this node in the data tree is marked as a metric.
     dataTreeCF = self.cfCache.get("data_tree_nodes")
     batch.insert(dataTreeCF, key, {'metric' : 'true'})
     self.insert_metric(key, True, batch=batch)
-
+    
+    if myBatch:
+      batch.send()
     return
 
   def __cmp__(self, other):
