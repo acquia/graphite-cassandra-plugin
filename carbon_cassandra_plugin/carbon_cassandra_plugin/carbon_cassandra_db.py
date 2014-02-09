@@ -6,8 +6,8 @@ import os
 import pycassa
 from pycassa import ConnectionPool, ColumnFamily, NotFoundException
 from pycassa.cassandra.ttypes import ConsistencyLevel
-from pycassa.system_manager import SystemManager, time, SIMPLE_STRATEGY
-from pycassa.types import UTF8Type
+from pycassa.system_manager import SystemManager, time
+from pycassa import types as pycassa_types
 
 DEFAULT_TIMESTEP = 60
 DEFAULT_SLICE_CACHING_BEHAVIOR = 'none'
@@ -328,7 +328,7 @@ class DataNode(object):
     in the `tree` and store it.
     """
     meta_data.setdefault('timeStep', DEFAULT_TIMESTEP)
-    node = cls(tree, meta_data, nodePath, nodePath)
+    node = cls(tree, meta_data, nodePath)
     node.writeMetadata(meta_data)
     return node
 
@@ -711,7 +711,7 @@ class DataSlice(object):
       return time.time()
 
     assert len(cols) == 1
-    return int(cols.keys()[-0])
+    return cols.keys()[-0]
 
   @classmethod
   def create(cls, node, startTime, timeStep):
@@ -734,15 +734,14 @@ class DataSlice(object):
     #TODO: VERY BAD code here to request call columns
     #get the columns in sensible buckets
 
-    cols = tsCF.get(key, column_start="{0}".format(fromTime),
-                        column_finish="{0}".format(untilTime),
+    cols = tsCF.get(key, column_start=int(fromTime),
+                        column_finish=int(untilTime),
                         column_count=1999999999)
     if not cols:
       raise NoData()
 
     endTime = cols.keys()[-1]
-    values = [float(x) for x in cols.values()]
-    return TimeSeriesData(fromTime, int(endTime), self.timeStep, values)
+    return TimeSeriesData(fromTime, endTime, self.timeStep, cols.values())
 
   def insert_metric(self, metric, isMetric=False, batch=None):
     """Insert the ``metric`` into the data_tree_nodes CF to say it's a
@@ -780,10 +779,10 @@ class DataSlice(object):
     
     # Write the data points to the tsXX table
     key = self.nodePath
-    cols = dict(
-      (str(t), str(v))
-      for t, v in sequence
-    )
+    cols = {
+      int(timestamp) : float(value)
+      for timestamp, value in sequence
+    }
     tsCF = self.cfCache.getTS("ts{0}".format(self.timeStep))
     batch.insert(tsCF, key, cols, ttl=self.retention)
     
@@ -900,26 +899,23 @@ def setDefaultSliceCachingBehavior(behavior):
   DEFAULT_SLICE_CACHING_BEHAVIOR = behavior
 
 
-def initializeTableLayout(keyspace, server_list=[]):
-    try:
-      # TODO move functionality out of try statement
-      cass_server = server_list[0]
-      sys_manager = SystemManager(cass_server)
+def initializeTableLayout(keyspace, server_list, replicationStrategy, 
+  strategyOptions):
 
-      # Make sure the the keyspace exists
-      if keyspace not in sys_manager.list_keyspaces():
-        sys_manager.create_keyspace(keyspace, SIMPLE_STRATEGY, \
-                {'replication_factor': '3'})
+    sys_manager = SystemManager(server_list[0])
 
-      cf_defs = sys_manager.get_keyspace_column_families(keyspace)
-
-      # Loop through and make sure that the necessary column families exist
-      for tablename in ["data_tree_nodes", "metadata"]:
-        if tablename not in cf_defs.keys():
-          createColumnFamily(sys_manager, keyspace, tablename)
-    except Exception as e:
-      raise Exception("Error initalizing table layout: {0}".format(e))
-
+    # Make sure the the keyspace exists
+    if keyspace not in sys_manager.list_keyspaces():
+      sys_manager.create_keyspace(keyspace, replicationStrategy, 
+        strategyOptions)
+        
+    cf_defs = sys_manager.get_keyspace_column_families(keyspace)
+    
+    # Create UTF8 CF's
+    for tablename in ["data_tree_nodes", "metadata"]:
+      if tablename not in cf_defs.keys():
+        createUTF8ColumnFamily(sys_manager, keyspace, tablename)
+    
 
 def createTSColumnFamily(servers, keyspace, tableName):
   """Create a tsXX Column Family using one of the servers in the ``servers``
@@ -928,23 +924,30 @@ def createTSColumnFamily(servers, keyspace, tableName):
 
   for server in servers:
     try:
-      sysManager = SystemManager(server)
-      createColumnFamily(sysManager, keyspace, tableName)
+      SystemManager(server).create_column_family(
+          keyspace,
+          tableName,
+          super=False,
+          comparator_type=pycassa_types.LongType(),
+          key_validation_class=pycassa_types.UTF8Type(),
+          default_validation_class=pycassa_types.FloatType()
+      )
+      return None
     except (Exception) as e:
       # TODO: log when we know how to log
-      continue
-    return None
+      lastError = e
 
-  raise RuntimeError("Failed to create CF %s.%s using the server list %s" % (
-    keyspace, tableName, servers))
+  raise RuntimeError("Failed to create CF %s.%s using the server list %s, "\
+    "last error was %s" % (keyspace, tableName, servers, str(lastError)))
 
-def createColumnFamily(sys_manager, keyspace, tablename):
-  """Create column family with UTF8Type comparators."""
+  
+def createUTF8ColumnFamily(sys_manager, keyspace, tablename):
+  """Create column family with UTF8Type comparator, value and key."""
   sys_manager.create_column_family(
       keyspace,
       tablename,
       super=False,
-      comparator_type=UTF8Type(),
-      key_validation_class=UTF8Type(),
-      default_validation_class=UTF8Type()
+      comparator_type=pycassa_types.UTF8Type(),
+      key_validation_class=pycassa_types.UTF8Type(),
+      default_validation_class=pycassa_types.UTF8Type()
   )

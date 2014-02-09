@@ -1,3 +1,4 @@
+import json
 import traceback
 
 import carbon_cassandra_db
@@ -26,7 +27,9 @@ class CarbonCassandraDatabase(object):
     servers = cassandra_settings.get('SERVERS')
     servers = [x.strip() for x in servers.split(',')]
 
-    carbon_cassandra_db.initializeTableLayout(keyspace, servers)
+    carbon_cassandra_db.initializeTableLayout(keyspace, servers, 
+      cassandra_settings.get("REPLICATION_STRATEGY"), 
+      json.loads(cassandra_settings.get("STRATEGY_OPTIONS")))
 
     self.tree = carbon_cassandra_db.DataTree(self.data_dir, keyspace, servers)
 
