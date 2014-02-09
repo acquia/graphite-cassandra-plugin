@@ -213,15 +213,6 @@ class DataTree(object):
     node.write(datapoints)
     return
 
-  def getFilesystemPath(self, nodePath):
-    """Get the on-disk path of a Ceres node given a metric name
-    """
-    return os.path.join(self.root, nodePath.replace('.', os.sep))
-
-  def getNodePath(self, fsPath):
-    """Get the metric name of a Ceres node given the on-disk path"""
-    return fsPath
-
   def getSliceInfo(self, query):
     """ Return all slice info for a given query
       This needs to get a single level of the tree
@@ -295,11 +286,10 @@ class DataNode(object):
     "xFilesFactor" : lambda x : str(x),
   }
   
-  def __init__(self, tree, meta_data, nodePath, fsPath=None):
+  def __init__(self, tree, meta_data, nodePath):
     self.tree = tree
     self.cfCache = tree.cfCache
     self.nodePath = nodePath
-    self.fsPath = nodePath
     #self.metadataFile = os.path.join(fsPath, '.ceres-node')
     self.metadataFile = nodePath
     self.timeStep = None
@@ -659,7 +649,7 @@ class DataNode(object):
 
 class DataSlice(object):
   __slots__ = ('node', 'cassandra_connection', 'startTime', 'timeStep',
-    'fsPath', 'retention', "cfCache")
+    'nodePath', 'retention', "cfCache")
 
   def __init__(self, node, startTime, timeStep):
     self.node = node
@@ -667,7 +657,7 @@ class DataSlice(object):
     self.cassandra_connection = node.cassandra_connection
     self.startTime = startTime
     self.timeStep = timeStep
-    self.fsPath = "{0}".format(node.fsPath)
+    self.nodePath = str(node.nodePath)
 
     # TODO: pull from cache within DataNode.readMetadata
     metadata = self.node.readMetadata()
@@ -675,7 +665,7 @@ class DataSlice(object):
     self.retention = int(retention[0]) * int(retention[1])
 
   def __repr__(self):
-    return "<DataSlice[0x%x]: %s>" % (id(self), self.fsPath)
+    return "<DataSlice[0x%x]: %s>" % (id(self), self.nodePath)
   __str__ = __repr__
 
   @property
@@ -683,7 +673,7 @@ class DataSlice(object):
     """Returns True id the data slice does not contain any data, False
     otherwise."""
 
-    key = str(self.node.fsPath)
+    key = self.nodePath
     tsCF = self.cfCache.getTS("ts{0}".format(self.timeStep))
 
     try:
@@ -697,7 +687,7 @@ class DataSlice(object):
   @property
   def endTime(self):
 
-    key = str(self.node.fsPath)
+    key = self.nodePath
     tsCF = self.cfCache.getTS("ts{0}".format(self.timeStep))
 
     try:
@@ -725,7 +715,7 @@ class DataSlice(object):
       raise InvalidRequest("Requested time range ({0}, {1}) preceeds this "\
         "slice: {2}".format(fromTime, untilTime, self.startTime))
 
-    key = str(self.node.fsPath)
+    key = self.nodePath
     tsCF = self.cfCache.getTS("ts{0}".format(self.timeStep))
     #TODO: VERY BAD code here to request call columns
     #get the columns in sensible buckets
@@ -775,7 +765,7 @@ class DataSlice(object):
       myBatch = True
     
     # Write the data points to the tsXX table
-    key = str(self.node.fsPath)
+    key = self.nodePath
     cols = dict(
       (str(t), str(v))
       for t, v in sequence
