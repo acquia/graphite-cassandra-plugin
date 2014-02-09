@@ -213,15 +213,18 @@ class DataTree(object):
     node.write(datapoints)
     return
 
-  def getSliceInfo(self, query):
-    """ Return all slice info for a given query
-      This needs to get a single level of the tree
+  def selfAndChildPaths(self, query):
+    """Get a list of the self and childs nodes under the `query`.
+     
       Think of it in terms of a glob:
         - * at the top of the tree should return all of the root-level nodes
         - carbon.* should return anything that begins with carbon, but *only*
           replacing .* with the actual value:
           ex. carbon.metrics.
               carbon.tests.
+              
+      Returns a list of the form [ (path, is_metric), ], includes the node 
+      identified by query.
     """
     if query == '*':
       query = 'root'
@@ -229,12 +232,23 @@ class DataTree(object):
       query = query.replace('.*', '')
 
     try:
-      return self.cfCache.get("data_tree_nodes").get(query)
+      cols = self.cfCache.get("data_tree_nodes").get(query)
     except (NotFoundException):
-      # empty dict to say there is are no sub nodes.
-      return {}
-
-
+      return []
+    
+    childs = []
+    for col, value in cols.iteritems():
+      if col == 'metric' and value == 'true':
+        # the query path is a metric
+        childs.append((query, True))
+      elif value == 'metric':
+        # this is a child metric
+        childs.append((col, True))
+      else:
+        # this is a branch node
+        childs.append((col, False))
+    return childs
+    
 def _retentionsFromCSV(csv):
     """Parse the command separated ints in `csv` into a list of tuples
     
