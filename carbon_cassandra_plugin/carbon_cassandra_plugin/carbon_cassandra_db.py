@@ -844,48 +844,24 @@ class TimeSeriesData(object):
         continue
 
 
-class CorruptNode(Exception):
-  def __init__(self, node, problem):
-    Exception.__init__(self, problem)
-    self.node = node
-    self.problem = problem
-
-
 class NoData(Exception):
-  def __init__(self, problem):
-    Exception.__init__(self, problem)
-    self.problem = problem
+  pass
 
 
 class NodeNotFound(Exception):
-  def __init__(self, problem):
-    Exception.__init__(self, problem)
-    self.problem = problem
-
-
-class NodeDeleted(Exception):
-  def __init__(self, problem):
-    Exception.__init__(self, problem)
-    self.problem = problem
+  pass
 
 
 class InvalidRequest(Exception):
-  def __init__(self, problem):
-    Exception.__init__(self, problem)
-    self.problem = problem
+  pass
 
-
+# TODO: Thise are not raised by the Data Slice
 class SliceGapTooLarge(Exception):
-  "For internal use only"
-  def __init__(self, problem):
-    Exception.__init__(self, problem)
-    self.problem = problem
+  pass
 
 
 class SliceDeleted(Exception):
-  def __init__(self, problem):
-    Exception.__init__(self, problem)
-    self.problem = problem
+  pass
 
 
 def setDefaultSliceCachingBehavior(behavior):
