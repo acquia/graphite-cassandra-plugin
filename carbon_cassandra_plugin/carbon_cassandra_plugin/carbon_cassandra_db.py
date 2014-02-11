@@ -762,14 +762,14 @@ class DataSlice(object):
     tsCF = self.cfCache.getTS("ts{0}".format(self.timeStep))
     #TODO: VERY BAD code here to request call columns
     #get the columns in sensible buckets
-
-    cols = tsCF.get(key, column_start=int(fromTime),
-                        column_finish=int(untilTime),
-                        column_count=1999999999)
-    if not cols:
-      raise NoData()
-
-    endTime = cols.keys()[-1]
+    try:
+      cols = tsCF.get(key, column_start=fromTime,
+                          column_finish=untilTime,
+                          column_count=1999999999)
+    except (NotFoundException) as e:
+      cols = {}
+    
+    endTime = cols.keys()[-1] if cols else untilTime
     return TimeSeriesData(fromTime, endTime, self.timeStep, cols.values())
 
   def insert_metric(self, metric, isMetric=False, batch=None):
@@ -976,7 +976,6 @@ def createTSColumnFamily(servers, keyspace, tableName):
 
   raise RuntimeError("Failed to create CF %s.%s using the server list %s, "\
     "last error was %s" % (keyspace, tableName, servers, str(lastError)))
-
   
 def createUTF8ColumnFamily(sys_manager, keyspace, tablename):
   """Create column family with UTF8Type comparator, value and key."""
