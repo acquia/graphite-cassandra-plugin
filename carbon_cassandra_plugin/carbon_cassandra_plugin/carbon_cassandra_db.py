@@ -713,19 +713,24 @@ class DataSlice(object):
 
   @property
   def endTime(self):
-
-    key = self.nodePath
-    tsCF = self.cfCache.getTS("ts{0}".format(self.timeStep))
-
-    try:
-      #TODO: do not use reversed, it has bad performance.
-      cols = tsCF.get(key, column_reversed=True, column_count=1)
-    except (NotFoundException):
-      return time.time()
-
-    assert len(cols) == 1
-    return cols.keys()[-0]
-
+    # key = self.nodePath
+    # tsCF = self.cfCache.getTS("ts{0}".format(self.timeStep))
+    # 
+    # try:
+    #   #TODO: do not use reversed, it has bad performance.
+    #   cols = tsCF.get(key, column_reversed=True, column_count=1)
+    # except (NotFoundException):
+    #   return self.startTime
+    # 
+    # assert len(cols) == 1
+    # return cols.keys()[-0]
+    
+    # HACK: return long.MAX_TIME because out DataSlices have no end time 
+    # to them. 
+    # TODO: Confirm this works, move the code above. 
+    return 9223372036854775807
+    
+    
   @classmethod
   def create(cls, node, startTime, timeStep):
     dataSlice = cls(node, startTime, timeStep)
