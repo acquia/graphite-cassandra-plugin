@@ -6,8 +6,8 @@ import os
 import pycassa
 from pycassa import ConnectionPool, ColumnFamily, NotFoundException
 from pycassa.cassandra.ttypes import ConsistencyLevel
-from pycassa.system_manager import SystemManager, time, SIMPLE_STRATEGY
-from pycassa.types import UTF8Type
+from pycassa.system_manager import SystemManager, time
+from pycassa import types as pycassa_types
 
 DEFAULT_TIMESTEP = 60
 DEFAULT_SLICE_CACHING_BEHAVIOR = 'none'
@@ -213,24 +213,18 @@ class DataTree(object):
     node.write(datapoints)
     return
 
-  def getFilesystemPath(self, nodePath):
-    """Get the on-disk path of a Ceres node given a metric name
-    """
-    return os.path.join(self.root, nodePath.replace('.', os.sep))
-
-  def getNodePath(self, fsPath):
-    """Get the metric name of a Ceres node given the on-disk path"""
-    return fsPath
-
-  def getSliceInfo(self, query):
-    """ Return all slice info for a given query
-      This needs to get a single level of the tree
+  def selfAndChildPaths(self, query):
+    """Get a list of the self and childs nodes under the `query`.
+     
       Think of it in terms of a glob:
         - * at the top of the tree should return all of the root-level nodes
         - carbon.* should return anything that begins with carbon, but *only*
           replacing .* with the actual value:
           ex. carbon.metrics.
               carbon.tests.
+              
+      Returns a list of the form [ (path, is_metric), ], includes the node 
+      identified by query.
     """
     if query == '*':
       query = 'root'
@@ -238,12 +232,23 @@ class DataTree(object):
       query = query.replace('.*', '')
 
     try:
-      return self.cfCache.get("data_tree_nodes").get(query)
+      cols = self.cfCache.get("data_tree_nodes").get(query)
     except (NotFoundException):
-      # empty dict to say there is are no sub nodes.
-      return {}
-
-
+      return []
+    
+    childs = []
+    for col, value in cols.iteritems():
+      if col == 'metric' and value == 'true':
+        # the query path is a metric
+        childs.append((query, True))
+      elif value == 'metric':
+        # this is a child metric
+        childs.append((col, True))
+      else:
+        # this is a branch node
+        childs.append((col, False))
+    return childs
+    
 def _retentionsFromCSV(csv):
     """Parse the command separated ints in `csv` into a list of tuples
     
@@ -295,11 +300,10 @@ class DataNode(object):
     "xFilesFactor" : lambda x : str(x),
   }
   
-  def __init__(self, tree, meta_data, nodePath, fsPath=None):
+  def __init__(self, tree, meta_data, nodePath):
     self.tree = tree
     self.cfCache = tree.cfCache
     self.nodePath = nodePath
-    self.fsPath = nodePath
     #self.metadataFile = os.path.join(fsPath, '.ceres-node')
     self.metadataFile = nodePath
     self.timeStep = None
@@ -324,7 +328,7 @@ class DataNode(object):
     in the `tree` and store it.
     """
     meta_data.setdefault('timeStep', DEFAULT_TIMESTEP)
-    node = cls(tree, meta_data, nodePath, nodePath)
+    node = cls(tree, meta_data, nodePath)
     node.writeMetadata(meta_data)
     return node
 
@@ -445,11 +449,24 @@ class DataNode(object):
           self.sliceCachingBehavior,))
 
   def readSlices(self):
-    return [
-        (int(self._meta_data["startTime"]),
-        int(self._meta_data["timeStep"]))
-    ]
-
+    """Get's a list of the slices available for this metric. 
+    
+    A slice has a start time and a time step, e.g. start at 9:00AM with 60 
+    second precision. 
+    
+    Returns a list of [ (startTime, timeStep)]
+    """
+    
+    # TODO: can / should this be cached ? 
+    key = self.nodePath
+    try:
+      cols = self.cfCache.get("node_slices").get(key, column_count=1000)
+    except (NotFoundException) as e:
+      return []
+    slices = list(cols.items(),)
+    slices.sort(reverse=True)
+    return slices
+    
   def setSliceCachingBehavior(self, behavior):
     behavior = behavior.lower()
     if behavior not in ('none', 'all', 'latest'):
@@ -546,15 +563,12 @@ class DataNode(object):
 
   def write(self, datapoints):
     with self.cfCache.batchMutator() as batch:
-      return self._write_internal(datapoints, batch=batch)
+      return self._write_internal(datapoints, batch)
 
-  def _write_internal(self, datapoints, batch=None):
+  def _write_internal(self, datapoints, batch):
     """Write the ``datapoints`` to the db using the ``batch`` mutator.
     """
-
-    if batch is None:
-      batch = self.cfCache.batchMutator()
-
+      
     if self.timeStep is None:
       self.readMetadata()
 
@@ -595,9 +609,9 @@ class DataNode(object):
             self.sliceCache = None
           except SliceDeleted:
             self.sliceCache = None
-            self._write_internal(datapoints, batch=batch)  # recurse to retry
+            self._write_internal(datapoints, batch)  # recurse to retry
             return
-
+          sequence = []
           break
 
         # sequence straddles the current slice, write the right side
@@ -605,14 +619,17 @@ class DataNode(object):
           # index of lowest timestamp that doesn't preceed slice.startTime
           boundaryIndex = bisect_left(timestamps, slice.startTime)
           sequenceWithinSlice = sequence[boundaryIndex:]
-          leftover = sequence[:boundaryIndex]
-          sequences.append(leftover)
+          # write the leftovers on the next earlier slice
+          sequence = sequence[:boundaryIndex]
           slice.write(sequenceWithinSlice, batch=batch)
 
-        else:
-          needsEarlierSlice.append(sequence)
-
+        if not sequence:
+          break
+        
         sliceBoundary = slice.startTime
+        
+      else: # this else if for the `for slice in self.slices` above
+        needsEarlierSlice.append(sequence)
 
       if not slicesExist:
         sequences.append(sequence)
@@ -662,7 +679,7 @@ class DataNode(object):
 
 class DataSlice(object):
   __slots__ = ('node', 'cassandra_connection', 'startTime', 'timeStep',
-    'fsPath', 'retention', "cfCache")
+    'nodePath', 'retention', "cfCache")
 
   def __init__(self, node, startTime, timeStep):
     self.node = node
@@ -670,7 +687,7 @@ class DataSlice(object):
     self.cassandra_connection = node.cassandra_connection
     self.startTime = startTime
     self.timeStep = timeStep
-    self.fsPath = "{0}".format(node.fsPath)
+    self.nodePath = str(node.nodePath)
 
     # TODO: pull from cache within DataNode.readMetadata
     metadata = self.node.readMetadata()
@@ -678,7 +695,7 @@ class DataSlice(object):
     self.retention = int(retention[0]) * int(retention[1])
 
   def __repr__(self):
-    return "<DataSlice[0x%x]: %s>" % (id(self), self.fsPath)
+    return "<DataSlice[0x%x]: %s>" % (id(self), self.nodePath)
   __str__ = __repr__
 
   @property
@@ -686,7 +703,7 @@ class DataSlice(object):
     """Returns True id the data slice does not contain any data, False
     otherwise."""
 
-    key = str(self.node.fsPath)
+    key = self.nodePath
     tsCF = self.cfCache.getTS("ts{0}".format(self.timeStep))
 
     try:
@@ -699,57 +716,71 @@ class DataSlice(object):
 
   @property
   def endTime(self):
-
-    key = str(self.node.fsPath)
-    tsCF = self.cfCache.getTS("ts{0}".format(self.timeStep))
-
-    try:
-      #TODO: do not use reversed, it has bad performance.
-      cols = tsCF.get(key, column_reversed=True, column_count=1)
-    except (NotFoundException):
-      return time.time()
-
-    assert len(cols) == 1
-    return int(cols.keys()[-0])
-
+    # key = self.nodePath
+    # tsCF = self.cfCache.getTS("ts{0}".format(self.timeStep))
+    # 
+    # try:
+    #   #TODO: do not use reversed, it has bad performance.
+    #   cols = tsCF.get(key, column_reversed=True, column_count=1)
+    # except (NotFoundException):
+    #   return self.startTime
+    # 
+    # assert len(cols) == 1
+    # return cols.keys()[-0]
+    
+    # HACK: return long.MAX_TIME because out DataSlices have no end time 
+    # to them. 
+    # TODO: Confirm this works, move the code above. 
+    return 9223372036854775807
+    
+    
   @classmethod
   def create(cls, node, startTime, timeStep):
-    slice = cls(node, startTime, timeStep)
-    return slice
+    dataSlice = cls(node, startTime, timeStep)
+    
+    # Record that there is a data slice for this node 
+    # using the startTime and timeStep we have.
+    key = node.nodePath
+    cols = {
+      dataSlice.startTime : dataSlice.timeStep
+    }
+    dataSlice.cfCache.get("node_slices").insert(key, cols)
+    
+    return dataSlice
 
   def read(self, fromTime, untilTime):
     """Return :cls:`TimeSeriesData` for this DataSlice, between ``fromTime``
     and ``untilTime``
     """
-
     timeOffset = int(fromTime) - self.startTime
 
     if timeOffset < 0:
       raise InvalidRequest("Requested time range ({0}, {1}) preceeds this "\
         "slice: {2}".format(fromTime, untilTime, self.startTime))
 
-    key = str(self.node.fsPath)
+    key = self.nodePath
     tsCF = self.cfCache.getTS("ts{0}".format(self.timeStep))
     #TODO: VERY BAD code here to request call columns
     #get the columns in sensible buckets
-
-    cols = tsCF.get(key, column_start="{0}".format(fromTime),
-                        column_finish="{0}".format(untilTime),
-                        column_count=1999999999)
-    if not cols:
-      raise NoData()
-
-    endTime = cols.keys()[-1]
-    values = [float(x) for x in cols.values()]
-    return TimeSeriesData(fromTime, int(endTime), self.timeStep, values)
+    try:
+      cols = tsCF.get(key, column_start=fromTime,
+                          column_finish=untilTime,
+                          column_count=1999999999)
+    except (NotFoundException) as e:
+      cols = {}
+    
+    endTime = cols.keys()[-1] if cols else untilTime
+    return TimeSeriesData(fromTime, endTime, self.timeStep, cols.values())
 
   def insert_metric(self, metric, isMetric=False, batch=None):
     """Insert the ``metric`` into the data_tree_nodes CF to say it's a
     metric as opposed to a non leaf node."""
-
+    
+    myBatch = False
     if batch is None:
       batch = self.cfCache.batchMutator()
-
+      myBatch = True
+      
     split = metric.split('.')
     if len(split) == 1:
       batch.insert(self.cfCache.get("data_tree_nodes"), 'root',
@@ -760,38 +791,67 @@ class DataSlice(object):
       batch.insert(self.cfCache.get("data_tree_nodes"), next_metric,
         {'.'.join(split) : metric_type })
       self.insert_metric(next_metric, batch=batch)
+    
+    if myBatch:
+      batch.send()
     return
 
   def write(self, sequence, batch=None):
     """Write the ``sequence`` of metrics into the the tsXX CF for this
     DataSlice, using the ``batch`` mutator.
     """
-
+    
+    myBatch = False
     if batch is None:
       batch = self.cfCache.batchMutator()
-
-    key = str(self.node.fsPath)
-    cols = dict(
-      (str(t), str(v))
-      for t, v in sequence
-    )
-    tableName = "ts{0}".format(self.timeStep)
-
-    tsCF = self.cfCache.getTS(tableName)
-
-    batch.insert(tsCF, key, cols, ttl=self.retention)
-
-    # update the slide info for the timestamp lookup
-    if not self.node.readMetadata().get("startTime"):
-      meta = self.node.readMetadata()
-      meta["startTime"] = self.startTime
-      # TODO: use the batch
-      self.node.writeMetadata(meta)
-
+      myBatch = True
+    
+    # Write the data points to the tsXX table
+    key = self.nodePath
+    cols = {
+      int(timestamp) : float(value)
+      for timestamp, value in sequence
+    }
+    tsCF = self.cfCache.getTS("ts{0}".format(self.timeStep))
+    # TODO: Restore TTL, was ttl=self.retention
+    # The roll up process relies of reading data from a fine archive that has 
+    # overflowed, this data is then selected to fill the corse archive. 
+    # e.g. with 5s:2m,1m:5m / retentions 5,24,60,5
+    # a rollup started at 01:09:28 will read from the ts5 slice between the 
+    # start of the slice and 2014-02-11 01:07:30. Data before 
+    # 2014-02-11 01:07:30 is considered overflow data. 
+    #
+    # It then cycles through the rentions in the course archive (ts60) 
+    # selecting data from the overflow points that match. 
+    # The window for the coard archive ends at the time the fine archive 
+    # starts and goes back in time (precision * retention) so starts at 
+    # 2014-02-11 01:02:00 and ends at 2014-02-11 01:07:00
+    #
+    # In this case it will look for data points from the overflow data in the  
+    # bounds: 
+    # 2014-02-11 01:02:00 to 2014-02-11 01:03:00
+    # 2014-02-11 01:03:00 to 2014-02-11 01:04:00
+    # 2014-02-11 01:04:00 to 2014-02-11 01:05:00
+    # 2014-02-11 01:05:00 to 2014-02-11 01:06:00
+    # 2014-02-11 01:06:00 to 2014-02-11 01:07:00
+    # 
+    # The aggregate value created from each of those selections from the 
+    # over flow will **overwrite** the value on disk for the ts60 slice. 
+    # 
+    # So we need to have enough data on disk for the ts5 slice to fill all the 
+    # retentions for the ts60 slice. In this case we need 5 minutes of 
+    # overflow data in the ts5 slice, this is on top of the 2 minutes of 
+    # data the ts5 slice retains.  And so forth, for the last slice 
+    # we only need to keep the data on disk for the length of it's rentention. 
+    batch.insert(tsCF, key, cols)
+    
+    # Make sure this node in the data tree is marked as a metric.
     dataTreeCF = self.cfCache.get("data_tree_nodes")
     batch.insert(dataTreeCF, key, {'metric' : 'true'})
     self.insert_metric(key, True, batch=batch)
-
+    
+    if myBatch:
+      batch.send()
     return
 
   def __cmp__(self, other):
@@ -836,48 +896,24 @@ class TimeSeriesData(object):
         continue
 
 
-class CorruptNode(Exception):
-  def __init__(self, node, problem):
-    Exception.__init__(self, problem)
-    self.node = node
-    self.problem = problem
-
-
 class NoData(Exception):
-  def __init__(self, problem):
-    Exception.__init__(self, problem)
-    self.problem = problem
+  pass
 
 
 class NodeNotFound(Exception):
-  def __init__(self, problem):
-    Exception.__init__(self, problem)
-    self.problem = problem
-
-
-class NodeDeleted(Exception):
-  def __init__(self, problem):
-    Exception.__init__(self, problem)
-    self.problem = problem
+  pass
 
 
 class InvalidRequest(Exception):
-  def __init__(self, problem):
-    Exception.__init__(self, problem)
-    self.problem = problem
+  pass
 
-
+# TODO: Thise are not raised by the Data Slice
 class SliceGapTooLarge(Exception):
-  "For internal use only"
-  def __init__(self, problem):
-    Exception.__init__(self, problem)
-    self.problem = problem
+  pass
 
 
 class SliceDeleted(Exception):
-  def __init__(self, problem):
-    Exception.__init__(self, problem)
-    self.problem = problem
+  pass
 
 
 def setDefaultSliceCachingBehavior(behavior):
@@ -891,27 +927,33 @@ def setDefaultSliceCachingBehavior(behavior):
   DEFAULT_SLICE_CACHING_BEHAVIOR = behavior
 
 
-def initializeTableLayout(keyspace, server_list=[]):
-    try:
-      # TODO move functionality out of try statement
-      cass_server = server_list[0]
-      sys_manager = SystemManager(cass_server)
+def initializeTableLayout(keyspace, server_list, replicationStrategy, 
+  strategyOptions):
 
-      # Make sure the the keyspace exists
-      if keyspace not in sys_manager.list_keyspaces():
-        sys_manager.create_keyspace(keyspace, SIMPLE_STRATEGY, \
-                {'replication_factor': '3'})
+    sys_manager = SystemManager(server_list[0])
 
-      cf_defs = sys_manager.get_keyspace_column_families(keyspace)
-
-      # Loop through and make sure that the necessary column families exist
-      for tablename in ["data_tree_nodes", "metadata"]:
-        if tablename not in cf_defs.keys():
-          createColumnFamily(sys_manager, keyspace, tablename)
-    except Exception as e:
-      raise Exception("Error initalizing table layout: {0}".format(e))
-
-
+    # Make sure the the keyspace exists
+    if keyspace not in sys_manager.list_keyspaces():
+      sys_manager.create_keyspace(keyspace, replicationStrategy, 
+        strategyOptions)
+        
+    cf_defs = sys_manager.get_keyspace_column_families(keyspace)
+    
+    # Create UTF8 CF's
+    for tablename in ["data_tree_nodes", "metadata"]:
+      if tablename not in cf_defs.keys():
+        createUTF8ColumnFamily(sys_manager, keyspace, tablename)
+    
+    if "node_slices" not in cf_defs.keys():
+      sys_manager.create_column_family(
+        keyspace,
+        "node_slices",
+        super=False,
+        comparator_type=pycassa_types.LongType(),
+        key_validation_class=pycassa_types.UTF8Type(),
+        default_validation_class=pycassa_types.LongType()      
+      )
+  
 def createTSColumnFamily(servers, keyspace, tableName):
   """Create a tsXX Column Family using one of the servers in the ``servers``
   list and the ``keysapce`` and ``tableName``.
@@ -919,23 +961,29 @@ def createTSColumnFamily(servers, keyspace, tableName):
 
   for server in servers:
     try:
-      sysManager = SystemManager(server)
-      createColumnFamily(sysManager, keyspace, tableName)
+      SystemManager(server).create_column_family(
+          keyspace,
+          tableName,
+          super=False,
+          comparator_type=pycassa_types.LongType(),
+          key_validation_class=pycassa_types.UTF8Type(),
+          default_validation_class=pycassa_types.FloatType()
+      )
+      return None
     except (Exception) as e:
       # TODO: log when we know how to log
-      continue
-    return None
+      lastError = e
 
-  raise RuntimeError("Failed to create CF %s.%s using the server list %s" % (
-    keyspace, tableName, servers))
-
-def createColumnFamily(sys_manager, keyspace, tablename):
-  """Create column family with UTF8Type comparators."""
+  raise RuntimeError("Failed to create CF %s.%s using the server list %s, "\
+    "last error was %s" % (keyspace, tableName, servers, str(lastError)))
+  
+def createUTF8ColumnFamily(sys_manager, keyspace, tablename):
+  """Create column family with UTF8Type comparator, value and key."""
   sys_manager.create_column_family(
       keyspace,
       tablename,
       super=False,
-      comparator_type=UTF8Type(),
-      key_validation_class=UTF8Type(),
-      default_validation_class=UTF8Type()
+      comparator_type=pycassa_types.UTF8Type(),
+      key_validation_class=pycassa_types.UTF8Type(),
+      default_validation_class=pycassa_types.UTF8Type()
   )

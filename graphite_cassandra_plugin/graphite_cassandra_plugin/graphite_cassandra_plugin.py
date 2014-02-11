@@ -59,32 +59,17 @@ class CassandraFinder(object):
 
   def find_nodes(self, query):
 
-    log.info("CassandraFinder.find_nodes(): query is: %s" % query.pattern)
-    value = self.tree.getSliceInfo(query.pattern)
-    log.info("CassandraFinder.find_nodes(): values are: {0}".format(value))
-    query_path = query.pattern.replace('.*', '')
-    log.info("CassandraFinder.find_nodes(): query_path changed to {0}".format(query_path))
-
-    leafs = []
-    for key in value.iterkeys():
-      if key == 'metric' and value[key] == 'true':
-        # We have a metric.
-        log.info("find_nodes(): LeafNode with query_path %s " % leafs)
-        leafs.append(query_path)
-      elif value[key] == 'metric':
-        log.info("find_nodes(): LeafNode with key %s " % leafs)
-        leafs.append(key)
+    childs = self.tree.selfAndChildPaths(query.pattern)
+    childNodes = self.tree.getNode([child
+      for child, isMetric in childs
+      if isMetric
+    ])
+    
+    # make sure we yield in the DB order
+    for child, isMetric in childs:
+      if isMetric:
+        yield LeafNode(child, CassandraReader(childNodes[child], child))
       else:
-        log.info("find_nodes(): BranchNode with key %s" % (key,))
-        yield BranchNode(key)
+        yield BranchNode(child)
 
-    if len(leafs) > 0:
-      # Don't make a call to Cassandra if there are no leafs.
-      log.info("find_nodes(): calling getNode with multiget %s" % (leafs,))
-      # Make a single multiget call to Cassandra with all leaf information
-      data_nodes = self.tree.getNode(leafs)
 
-      # 'path' here refers to either 'query_path' or 'key'
-      for path, node in data_nodes.iteritems():
-        reader = CassandraReader(node, path)
-        yield LeafNode(path, reader)
