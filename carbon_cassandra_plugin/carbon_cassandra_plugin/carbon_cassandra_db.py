@@ -611,7 +611,7 @@ class DataNode(object):
             self.sliceCache = None
             self._write_internal(datapoints, batch)  # recurse to retry
             return
-
+          sequence = []
           break
 
         # sequence straddles the current slice, write the right side
@@ -619,14 +619,17 @@ class DataNode(object):
           # index of lowest timestamp that doesn't preceed slice.startTime
           boundaryIndex = bisect_left(timestamps, slice.startTime)
           sequenceWithinSlice = sequence[boundaryIndex:]
-          leftover = sequence[:boundaryIndex]
-          sequences.append(leftover)
+          # write the leftovers on the next earlier slice
+          sequence = sequence[:boundaryIndex]
           slice.write(sequenceWithinSlice, batch=batch)
 
-        else:
-          needsEarlierSlice.append(sequence)
-
+        if not sequence:
+          break
+        
         sliceBoundary = slice.startTime
+        
+      else: # this else if for the `for slice in self.slices` above
+        needsEarlierSlice.append(sequence)
 
       if not slicesExist:
         sequences.append(sequence)
@@ -749,7 +752,6 @@ class DataSlice(object):
     """Return :cls:`TimeSeriesData` for this DataSlice, between ``fromTime``
     and ``untilTime``
     """
-
     timeOffset = int(fromTime) - self.startTime
 
     if timeOffset < 0:
