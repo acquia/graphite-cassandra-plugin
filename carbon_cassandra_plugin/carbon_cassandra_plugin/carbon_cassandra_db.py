@@ -449,11 +449,24 @@ class DataNode(object):
           self.sliceCachingBehavior,))
 
   def readSlices(self):
-    return [
-        (int(self._meta_data["startTime"]),
-        int(self._meta_data["timeStep"]))
-    ]
-
+    """Get's a list of the slices available for this metric. 
+    
+    A slice has a start time and a time step, e.g. start at 9:00AM with 60 
+    second precision. 
+    
+    Returns a list of [ (startTime, timeStep)]
+    """
+    
+    # TODO: can / should this be cached ? 
+    key = self.nodePath
+    try:
+      cols = self.cfCache.get("node_slices").get(key, column_count=1000)
+    except (NotFoundException) as e:
+      return []
+    slices = list(cols.items(),)
+    slices.sort(reverse=True)
+    return slices
+    
   def setSliceCachingBehavior(self, behavior):
     behavior = behavior.lower()
     if behavior not in ('none', 'all', 'latest'):
@@ -715,8 +728,17 @@ class DataSlice(object):
 
   @classmethod
   def create(cls, node, startTime, timeStep):
-    slice = cls(node, startTime, timeStep)
-    return slice
+    dataSlice = cls(node, startTime, timeStep)
+    
+    # Record that there is a data slice for this node 
+    # using the startTime and timeStep we have.
+    key = node.nodePath
+    cols = {
+      dataSlice.startTime : dataSlice.timeStep
+    }
+    dataSlice.cfCache.get("node_slices").insert(key, cols)
+    
+    return dataSlice
 
   def read(self, fromTime, untilTime):
     """Return :cls:`TimeSeriesData` for this DataSlice, between ``fromTime``
@@ -892,7 +914,16 @@ def initializeTableLayout(keyspace, server_list, replicationStrategy,
       if tablename not in cf_defs.keys():
         createUTF8ColumnFamily(sys_manager, keyspace, tablename)
     
-
+    if "node_slices" not in cf_defs.keys():
+      sys_manager.create_column_family(
+        keyspace,
+        "node_slices",
+        super=False,
+        comparator_type=pycassa_types.LongType(),
+        key_validation_class=pycassa_types.UTF8Type(),
+        default_validation_class=pycassa_types.LongType()      
+      )
+  
 def createTSColumnFamily(servers, keyspace, tableName):
   """Create a tsXX Column Family using one of the servers in the ``servers``
   list and the ``keysapce`` and ``tableName``.
