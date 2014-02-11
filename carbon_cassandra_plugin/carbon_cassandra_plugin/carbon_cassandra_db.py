@@ -806,14 +806,37 @@ class DataSlice(object):
       for timestamp, value in sequence
     }
     tsCF = self.cfCache.getTS("ts{0}".format(self.timeStep))
-    batch.insert(tsCF, key, cols, ttl=self.retention)
-    
-    # if we do not have a start time for this metric write one
-    if not self.node.readMetadata().get("startTime"):
-      meta = self.node.readMetadata()
-      meta["startTime"] = self.startTime
-      # TODO: use the batch
-      self.node.writeMetadata(meta)
+    # TODO: Restore TTL, was ttl=self.retention
+    # The roll up process relies of reading data from a fine archive that has 
+    # overflowed, this data is then selected to fill the corse archive. 
+    # e.g. with 5s:2m,1m:5m / retentions 5,24,60,5
+    # a rollup started at 01:09:28 will read from the ts5 slice between the 
+    # start of the slice and 2014-02-11 01:07:30. Data before 
+    # 2014-02-11 01:07:30 is considered overflow data. 
+    #
+    # It then cycles through the rentions in the course archive (ts60) 
+    # selecting data from the overflow points that match. 
+    # The window for the coard archive ends at the time the fine archive 
+    # starts and goes back in time (precision * retention) so starts at 
+    # 2014-02-11 01:02:00 and ends at 2014-02-11 01:07:00
+    #
+    # In this case it will look for data points from the overflow data in the  
+    # bounds: 
+    # 2014-02-11 01:02:00 to 2014-02-11 01:03:00
+    # 2014-02-11 01:03:00 to 2014-02-11 01:04:00
+    # 2014-02-11 01:04:00 to 2014-02-11 01:05:00
+    # 2014-02-11 01:05:00 to 2014-02-11 01:06:00
+    # 2014-02-11 01:06:00 to 2014-02-11 01:07:00
+    # 
+    # The aggregate value created from each of those selections from the 
+    # over flow will **overwrite** the value on disk for the ts60 slice. 
+    # 
+    # So we need to have enough data on disk for the ts5 slice to fill all the 
+    # retentions for the ts60 slice. In this case we need 5 minutes of 
+    # overflow data in the ts5 slice, this is on top of the 2 minutes of 
+    # data the ts5 slice retains.  And so forth, for the last slice 
+    # we only need to keep the data on disk for the length of it's rentention. 
+    batch.insert(tsCF, key, cols)
     
     # Make sure this node in the data tree is marked as a metric.
     dataTreeCF = self.cfCache.get("data_tree_nodes")
