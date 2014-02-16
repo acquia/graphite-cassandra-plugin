@@ -716,21 +716,12 @@ class DataSlice(object):
 
   @property
   def endTime(self):
-    # key = self.nodePath
-    # tsCF = self.cfCache.getTS("ts{0}".format(self.timeStep))
-    # 
-    # try:
-    #   #TODO: do not use reversed, it has bad performance.
-    #   cols = tsCF.get(key, column_reversed=True, column_count=1)
-    # except (NotFoundException):
-    #   return self.startTime
-    # 
-    # assert len(cols) == 1
-    # return cols.keys()[-0]
+    """Returns the end time for the data slice. 
     
-    # HACK: return long.MAX_TIME because out DataSlices have no end time 
-    # to them. 
-    # TODO: Confirm this works, move the code above. 
+    Returns Java long.MAX_VALUE because our data slices in Cassandra have 
+    no end time to them. AFAI in Ceres they have an end time because they 
+    it's a file based system and they want to delete files. 
+    """
     return 9223372036854775807
     
     
