@@ -237,9 +237,10 @@ class DataTree(object):
     else:
       query = query.replace('.*', '')
 
-    cfName = "dc_%s_nodes" % (dcName,) if dcName else "data_tree_nodes" 
+    cfName = "dc_%s_nodes" % (dcName,) if dcName else "global_nodes" 
+    
     try:
-      cols = self.cfCache.get(table).get(query)
+      cols = self.cfCache.get(cfName).get(query)
     except (NotFoundException):
       return []
     
@@ -787,7 +788,7 @@ class DataSlice(object):
     return TimeSeriesData(fromTime, endTime, self.timeStep, cols.values())
 
   def insert_metric(self, metric, isMetric=False, batch=None):
-    """Insert the ``metric`` into the data_tree_nodes CF to say it's a
+    """Insert the ``metric`` into the global_nodes CF to say it's a
     metric as opposed to a non leaf node."""
     
     myBatch = False
@@ -797,7 +798,7 @@ class DataSlice(object):
       
     split = metric.split('.')
     if len(split) == 1:
-      batch.insert(self.cfCache.get("data_tree_nodes"), 'root',
+      batch.insert(self.cfCache.get("global_nodes"), 'root',
         { metric : '' })
       # Record the DC this node was created in, used to segment rollups
       if self.node.tree.localDCName: 
@@ -810,7 +811,7 @@ class DataSlice(object):
     else:
       next_metric = '.'.join(split[0:-1])
       metric_type =  'metric' if isMetric else ''
-      batch.insert(self.cfCache.get("data_tree_nodes"), next_metric,
+      batch.insert(self.cfCache.get("global_nodes"), next_metric,
         {'.'.join(split) : metric_type })
       # Record the DC this node was created in, used to segment rollups
       if self.node.tree.localDCName:
@@ -877,7 +878,7 @@ class DataSlice(object):
     batch.insert(tsCF, key, cols)
     
     # Make sure this node in the data tree is marked as a metric.
-    dataTreeCF = self.cfCache.get("data_tree_nodes")
+    dataTreeCF = self.cfCache.get("global_nodes")
     batch.insert(dataTreeCF, key, {'metric' : 'true'})
     # Record the DC this node was created in, used to segment rollups
     if self.node.tree.localDCName:
@@ -979,7 +980,7 @@ def initializeTableLayout(keyspace, server_list, replicationStrategy,
     cf_defs = sys_manager.get_keyspace_column_families(keyspace)
     
     # Create UTF8 CF's
-    for tablename in ["data_tree_nodes", "metadata"]:
+    for tablename in ["global_nodes", "metadata"]:
       if tablename not in cf_defs.keys():
         createUTF8ColumnFamily(sys_manager, keyspace, tablename)
     
