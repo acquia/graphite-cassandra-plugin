@@ -227,7 +227,8 @@ class DataTree(object):
       
       If `dcName` is specified only paths created by daemons running in the 
       given Cassandra Data Centre are returned. The daemons are configured 
-      with a Data Centre node in db.conf.
+      with a Data Centre node in db.conf. If True is passed the localDCName 
+      passed when the DataTree was created is used. 
        
       Returns a list of the form [ (path, is_metric), ], includes the node 
       identified by query.
@@ -237,6 +238,10 @@ class DataTree(object):
     else:
       query = query.replace('.*', '')
 
+    if dcName == True:
+      if not self.localDCName:
+        raise ValueError("dcName set to True, but localDCName not set")
+      dcName = self.localDCName
     cfName = "dc_%s_nodes" % (dcName,) if dcName else "global_nodes" 
     
     try:
