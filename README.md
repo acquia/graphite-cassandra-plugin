@@ -17,7 +17,12 @@ Modify the db.conf file located at conf/carbon-daemons/writer/db.conf
     [cassandra]
     KEYSPACE = graphite
     SERVERS = 192.168.1.1:9160,192.168.1.2:9160,192.168.1.3:9160
-
+    REPLICATION_STRATEGY = NetworkTopologyStrategy
+    STRATEGY_OPTIONS = {"datacenter1" : "1"}
+    # Nodes created by this daemon will be associated with this DC for 
+    # maintenance tasks such as rollups.
+    LOCAL_DC_NAME=datacenter1
+    
 The carbon daemon is run from the mounted carbon source, start it with:
 
     sudo -u www-data /vagrant/src/carbon/bin/carbon-daemon.py --config=/opt/graphite/conf/carbon-daemons/writer/ writer start
@@ -41,8 +46,11 @@ Start the web server using the Django dev server with:
 The Apache Cassandra schema used for the Carbon backend store is auto created
 when initialized. The table layout definitions are: 
 
-* `data_tree_nodes`
+* `global_nodes`
   - Metric hierarchical relationship representation 
+* `dc_$DCNAME_nodes`
+  - Replicates the global_nodes hierarchy above but only for nodes created 
+  by carb daemons running in the $DCNAME cassandra data centre. 
 * `metadata`
   - Metric metedata (Time Step, Retentions, Aggregation Method, etc.)
 * `ts{VALUE}`
@@ -53,7 +61,7 @@ Edit `$USER/.cassandra-cli/assumptions.json` and add the following data type ass
 
     {
       "graphite" : [ {
-        "data_tree_nodes" : [ {
+        "global_nodes" : [ {
           "KEYS" : "utf8"
         } ]
       }, {
