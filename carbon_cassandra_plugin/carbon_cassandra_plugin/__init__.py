@@ -29,9 +29,11 @@ class CarbonCassandraDatabase(object):
 
     carbon_cassandra_db.initializeTableLayout(keyspace, servers, 
       cassandra_settings.get("REPLICATION_STRATEGY"), 
-      json.loads(cassandra_settings.get("STRATEGY_OPTIONS")))
+      json.loads(cassandra_settings.get("STRATEGY_OPTIONS")), 
+      cassandra_settings.get("LOCAL_DC_NAME"))
 
-    self.tree = carbon_cassandra_db.DataTree(self.data_dir, keyspace, servers)
+    self.tree = carbon_cassandra_db.DataTree(self.data_dir, keyspace, servers, 
+      localDCName=cassandra_settings.get("LOCAL_DC_NAME"))
 
     if behavior:
       carbon_cassandra_db.setDefaultSliceCachingBehavior(behavior)

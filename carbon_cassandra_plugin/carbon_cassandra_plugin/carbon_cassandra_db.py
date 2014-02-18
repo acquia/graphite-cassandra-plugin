@@ -111,14 +111,16 @@ class DataTree(object):
 
   def __init__(self, root, keyspace, server_list,
     read_consistency_level=ConsistencyLevel.ONE,
-    write_consistency_level=ConsistencyLevel.ONE):
+    write_consistency_level=ConsistencyLevel.ONE, 
+    localDCName=None):
 
     self.cassandra_connection = ConnectionPool(keyspace, server_list)
     self.cfCache = ColumnFamilyCache(self.cassandra_connection,
       read_consistency_level, write_consistency_level)
     self.root = root
     self._nodeCache = NodeCache()
-
+    self.localDCName = localDCName
+    
   def __repr__(self):
     return "<DataTree[0x%x]: %s>" % (id(self), self.root)
   __str__ = __repr__
@@ -213,7 +215,7 @@ class DataTree(object):
     node.write(datapoints)
     return
 
-  def selfAndChildPaths(self, query):
+  def selfAndChildPaths(self, query, dcName=None):
     """Get a list of the self and childs nodes under the `query`.
      
       Think of it in terms of a glob:
@@ -222,7 +224,11 @@ class DataTree(object):
           replacing .* with the actual value:
           ex. carbon.metrics.
               carbon.tests.
-              
+      
+      If `dcName` is specified only paths created by daemons running in the 
+      given Cassandra Data Centre are returned. The daemons are configured 
+      with a Data Centre node in db.conf.
+       
       Returns a list of the form [ (path, is_metric), ], includes the node 
       identified by query.
     """
@@ -231,8 +237,9 @@ class DataTree(object):
     else:
       query = query.replace('.*', '')
 
+    cfName = "dc_%s_nodes" % (dcName,) if dcName else "data_tree_nodes" 
     try:
-      cols = self.cfCache.get("data_tree_nodes").get(query)
+      cols = self.cfCache.get(table).get(query)
     except (NotFoundException):
       return []
     
@@ -330,6 +337,7 @@ class DataNode(object):
     meta_data.setdefault('timeStep', DEFAULT_TIMESTEP)
     node = cls(tree, meta_data, nodePath)
     node.writeMetadata(meta_data)
+
     return node
 
   @classmethod
@@ -469,6 +477,7 @@ class DataNode(object):
     # call to Cassandra to get the startTime for each timeStep
     slices = []
     for timeStep, defaultStartTime in nodeSlicesCols.iteritems():
+      
       try:
         cols = self.cfCache.getTS("ts{0}".format(timeStep)).get(key, column_count=1)
       except (NotFoundException) as e:
@@ -790,11 +799,28 @@ class DataSlice(object):
     if len(split) == 1:
       batch.insert(self.cfCache.get("data_tree_nodes"), 'root',
         { metric : '' })
+      # Record the DC this node was created in, used to segment rollups
+      if self.node.tree.localDCName: 
+          batch.insert(self.cfCache.get("dc_%s_nodes" % (
+            self.node.tree.localDCName,)), "root", { metric : '' })
+      else:
+        # TODO: log a WARN that we do not know where this node was created
+        pass
+        
     else:
       next_metric = '.'.join(split[0:-1])
       metric_type =  'metric' if isMetric else ''
       batch.insert(self.cfCache.get("data_tree_nodes"), next_metric,
         {'.'.join(split) : metric_type })
+      # Record the DC this node was created in, used to segment rollups
+      if self.node.tree.localDCName:
+        batch.insert(self.cfCache.get("dc_%s_nodes" % (
+          self.node.tree.localDCName,)), next_metric, 
+          {'.'.join(split) : metric_type })
+      else:
+        # TODO: log a WARN that we do not know where this node was created
+        pass
+        
       self.insert_metric(next_metric, batch=batch)
     
     if myBatch:
@@ -853,6 +879,14 @@ class DataSlice(object):
     # Make sure this node in the data tree is marked as a metric.
     dataTreeCF = self.cfCache.get("data_tree_nodes")
     batch.insert(dataTreeCF, key, {'metric' : 'true'})
+    # Record the DC this node was created in, used to segment rollups
+    if self.node.tree.localDCName:
+      batch.insert(self.cfCache.get("dc_%s_nodes" % (
+        self.node.tree.localDCName,)), key, {'metric' : 'true'})
+    else:
+      # TODO: log a WARN that we do not know where this node was created
+      pass
+      
     self.insert_metric(key, True, batch=batch)
     
     if myBatch:
@@ -933,7 +967,7 @@ def setDefaultSliceCachingBehavior(behavior):
 
 
 def initializeTableLayout(keyspace, server_list, replicationStrategy, 
-  strategyOptions):
+  strategyOptions, localDCName):
 
     sys_manager = SystemManager(server_list[0])
 
@@ -949,6 +983,14 @@ def initializeTableLayout(keyspace, server_list, replicationStrategy,
       if tablename not in cf_defs.keys():
         createUTF8ColumnFamily(sys_manager, keyspace, tablename)
     
+    if localDCName:
+        dcNodes = "dc_%s_nodes" % localDCName
+        if dcNodes not in cf_defs.keys():
+          createUTF8ColumnFamily(sys_manager, keyspace, dcNodes)
+    else:
+      # TODO Log we do not have the DC name
+      pass
+      
     if "node_slices" not in cf_defs.keys():
       sys_manager.create_column_family(
         keyspace,
