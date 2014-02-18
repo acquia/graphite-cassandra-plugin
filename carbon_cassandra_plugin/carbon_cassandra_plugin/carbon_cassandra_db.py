@@ -458,12 +458,26 @@ class DataNode(object):
     """
     
     # TODO: can / should this be cached ? 
+    # Read the timeSteps we have for this node
     key = self.nodePath
     try:
-      cols = self.cfCache.get("node_slices").get(key, column_count=1000)
+      nodeSlicesCols = self.cfCache.get("node_slices").get(key, 
+        column_count=1000)
     except (NotFoundException) as e:
       return []
-    slices = list(cols.items(),)
+    
+    # call to Cassandra to get the startTime for each timeStep
+    slices = []
+    for timeStep, defaultStartTime in nodeSlicesCols.iteritems():
+      try:
+        cols = self.cfCache.getTS("ts{0}".format(timeStep)).get(key, column_count=1)
+      except (NotFoundException) as e:
+        # no data for this time slice yet, but we have it exists because we 
+        # have it in node_slices
+        slices.append((defaultStartTime, timeStep))
+      else:
+        slices.append((cols.keys()[0], timeStep))
+    
     slices.sort(reverse=True)
     return slices
     
@@ -728,12 +742,12 @@ class DataSlice(object):
   @classmethod
   def create(cls, node, startTime, timeStep):
     dataSlice = cls(node, startTime, timeStep)
-    
     # Record that there is a data slice for this node 
-    # using the startTime and timeStep we have.
+    # Only records the timeStep there as the start time depends on the 
+    # data we have in the tsXX row.
     key = node.nodePath
     cols = {
-      dataSlice.startTime : dataSlice.timeStep
+      dataSlice.timeStep : startTime
     }
     dataSlice.cfCache.get("node_slices").insert(key, cols)
     
