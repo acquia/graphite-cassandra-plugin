@@ -215,7 +215,8 @@ class DataTree(object):
     node.write(datapoints)
     return
 
-  def selfAndChildPaths(self, query, dcName=None):
+  def selfAndChildPaths(self, query, dcName=None, startToken=None, 
+    endToken=None):
     """Get a list of the self and childs nodes under the `query`.
      
       Think of it in terms of a glob:
@@ -233,27 +234,68 @@ class DataTree(object):
       Returns a list of the form [ (path, is_metric), ], includes the node 
       identified by query.
     """
-    if query == '*':
-      query = 'root'
-    else:
-      query = query.replace('.*', '')
 
+    # TODO: this function has grown, maybe the token slices should be 
+    # split out. 
+    
     if dcName == True:
       if not self.localDCName:
         raise ValueError("dcName set to True, but localDCName not set")
       dcName = self.localDCName
     cfName = "dc_%s_nodes" % (dcName,) if dcName else "global_nodes" 
     
-    try:
-      cols = self.cfCache.get(cfName).get(query)
-    except (NotFoundException):
-      return []
+    if bool(startToken) != bool(endToken):
+      raise ValueError("None or both of startToken and endToken must be "\
+        "specified.")
+    elif startToken and endToken and query:
+      raise ValueError("query can not be specified with startToken and "\
+        "endToken")
+
+    if query == '*':
+      query = 'root'
+    elif query:
+      query = query.replace('.*', '')
+
+    def _genAll():
+      """Generator to yield (key, col, value) triples from reading a row 
+      in the nodes CF.
+      
+      The query is the row key.
+      """
+      # read all rows in the CF
+      try:
+        cols = self.cfCache.get(cfName).get(query)
+      except (NotFoundException):
+        pass
+      else:
+        for col, value in cols.iteritems():
+          yield (query, col, value)
+    
+    def _genRange():
+      """Generator to yield (key, col, value) triples from reading a 
+      range of rows in the nodes CF."""
+      # only read rows in the specified token range. 
+      # returns a generator, no NotFoundExceptions
+      # generator batches request to pull cf.buffer_size rows per 
+      # cassandra call.
+      rangeIter = self.cfCache.get(cfName).get_range(start_token=startToken, 
+        finish_token=endToken)
+
+      # we may get duplicate entries because a data node will have it's 
+      # own row and be a column in it's parents row. 
+      # HACK: skip rows that have child data nodes, this is wasteful but the  
+      # alternative is to only record data nodes that are metrics in each DC. 
+      for key, cols in rangeIter:
+        if cols.get("metric") == "true":
+          yield (key, "metric", "true")
+
+    colsIter = _genRange() if startToken else _genAll()
     
     childs = []
-    for col, value in cols.iteritems():
+    for key, col, value in colsIter:
       if col == 'metric' and value == 'true':
         # the query path is a metric
-        childs.append((query, True))
+        childs.append((key, True))
       elif value == 'metric':
         # this is a child metric
         childs.append((col, True))
@@ -789,8 +831,7 @@ class DataSlice(object):
     except (NotFoundException) as e:
       cols = {}
     
-    endTime = cols.keys()[-1] if cols else untilTime
-    return TimeSeriesData(fromTime, endTime, self.timeStep, cols.values())
+    return TimeSeriesData(fromTime, endTime, self.timeStep, cols.items())
 
   def insert_metric(self, metric, isMetric=False, batch=None):
     """Insert the ``metric`` into the global_nodes CF to say it's a
