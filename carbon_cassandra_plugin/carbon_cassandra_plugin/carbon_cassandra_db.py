@@ -452,7 +452,7 @@ class DataNode(object):
 
   @property
   def slices(self):
-
+    
     # What happens when the sliceCache is null
     if self.sliceCache:
       if self.sliceCachingBehavior == 'all':
@@ -569,36 +569,49 @@ class DataNode(object):
 
     if self.timeStep is None:
       self.readMetadata()
-
-    # Normalize the timestamps to fit proper intervals
-    fromTime = int(fromTime - (fromTime % self.timeStep) + self.timeStep)
-    untilTime = int(untilTime - (untilTime % self.timeStep) + self.timeStep)
-
+      
+    origFromTime = fromTime
+    origUntilTime = untilTime
+    
+    # Normalise here so incase there are not slices
+    # will normalise again in the loop
+    fromTime = int(origFromTime - (origFromTime % self.timeStep) 
+      + self.timeStep)
+    untilTime = int(origUntilTime - (origUntilTime % self.timeStep) 
+      + self.timeStep)
+    
     sliceBoundary = None  # to know when to split up queries across slices
     resultValues = []
     earliestData = None
 
-    # TODO: slice is a global function, rename this var
-    # We are iterating over DataSlice objects here
-    for slice in self.slices:
+    for dataSlice in self.slices:
+      # Normalize the timestamps to fit proper intervals
+      # NOTE: this is different to ceres, it normalises using the nodes
+      # timeStamp which results in a mis match when trying to None pad 
+      # dataPoints in TimsSeriesData because the timestamp do not match
+      fromTime = int(origFromTime - (origFromTime % dataSlice.timeStep) 
+        + dataSlice.timeStep)
+      untilTime = int(origUntilTime - (origUntilTime % dataSlice.timeStep) 
+        + dataSlice.timeStep)
+
       # if the requested interval starts after the start of this slice
-      if fromTime >= slice.startTime:
+      if fromTime >= dataSlice.startTime:
         try:
-          series = slice.read(fromTime, untilTime)
+          series = dataSlice.read(fromTime, untilTime)
         except NoData:
-          # Should this break processing, means we only look at one dataslice?
-          # it's a continue below
-          break
+          # amorton: changed from break to continue
+          # so that if the slice has no data we look at the next slice
+          continue
 
         earliestData = series.startTime
 
-        rightMissing = (untilTime - series.endTime) / self.timeStep
+        rightMissing = (untilTime - series.endTime) / dataSlice.timeStep
         rightNulls = [None for i in range(rightMissing - len(resultValues))]
         resultValues = series.values + rightNulls + resultValues
         break
 
       # or if slice contains data for part of the requested interval
-      elif untilTime >= slice.startTime:
+      elif untilTime >= dataSlice.startTime:
         # Split the request up if it straddles a slice boundary
         if (sliceBoundary is not None) and untilTime > sliceBoundary:
           requestUntilTime = sliceBoundary
@@ -606,31 +619,35 @@ class DataNode(object):
           requestUntilTime = untilTime
 
         try:
-          series = slice.read(slice.startTime, requestUntilTime)
+          series = dataSlice.read(dataSlice.startTime, requestUntilTime)
         except NoData:
           continue
 
         earliestData = series.startTime
 
-        rightMissing = (requestUntilTime - series.endTime) / self.timeStep
+        rightMissing = (requestUntilTime - series.endTime) / dataSlice.timeStep
         rightNulls = [None for i in range(rightMissing)]
         resultValues = series.values + rightNulls + resultValues
 
       # this is the right-side boundary on the next iteration
-      sliceBoundary = slice.startTime
+      sliceBoundary = dataSlice.startTime
 
     # The end of the requested interval predates all slices
     if earliestData is None:
-      missing = int(untilTime - fromTime) / self.timeStep
+      # OK to use the DataNode timeStep here.
+      seriesTimestep = self.timeStep
+      missing = int(untilTime - fromTime) / seriesTimestep
       resultValues = [None for i in range(missing)]
-
-    # Left pad nulls if the start of the requested interval predates all slices
     else:
-      leftMissing = (earliestData - fromTime) / self.timeStep
+      # Left pad nulls if the start of the requested interval 
+      # predates all slices
+      # use the timestamp from the last DataSlice we looked at.
+      seriesTimestep = dataSlice.timeStep
+      leftMissing = (earliestData - fromTime) / seriesTimestep
       leftNulls = [None for i in range(leftMissing)]
       resultValues = leftNulls + resultValues
 
-    return TimeSeriesData(fromTime, untilTime, self.timeStep, resultValues)
+    return TimeSeriesData(fromTime, untilTime, seriesTimestep, resultValues)
 
   def write(self, datapoints):
     with self.cfCache.batchMutator() as batch:
@@ -814,6 +831,7 @@ class DataSlice(object):
     """Return :cls:`TimeSeriesData` for this DataSlice, between ``fromTime``
     and ``untilTime``
     """
+    
     timeOffset = int(fromTime) - self.startTime
 
     if timeOffset < 0:
@@ -829,10 +847,11 @@ class DataSlice(object):
                           column_finish=untilTime,
                           column_count=1999999999)
     except (NotFoundException) as e:
-      cols = {}
+      raise NoData()
     
-    return TimeSeriesData(fromTime, endTime, self.timeStep, cols.items())
-
+    return TimeSeriesData.fromDB(fromTime, untilTime, self.timeStep, 
+      cols.items())
+    
   def insert_metric(self, metric, isMetric=False, batch=None):
     """Insert the ``metric`` into the global_nodes CF to say it's a
     metric as opposed to a non leaf node."""
@@ -953,7 +972,70 @@ class TimeSeriesData(object):
     self.endTime = endTime
     self.timeStep = timeStep
     self.values = values
+  
+  @classmethod
+  def fromDB(cls, startTime, endTime, timeStep, dataPoints):
+    """Create a new instance using the `dataPoints` list of 
+    (col, value) / (timestamp, value) tuples.
+    
+    Cassandra is a sparse store, we store the time and value of the data 
+    point. Ceres (and I guess whisper) are fixed, the CeresSlice will pad out 
+    zero entries when data is missing. It will even refuse to write to 
+    a particular CeresSlice if too many zero pads would be added. 
+    
+    Other code in the rollups expects the TimeSeries to not contain any gaps. 
+    
+    To keep things simple we fill pad missing values with None when 
+    constructing a new TimeSeries. 
+    """
+    
+    def _safeIter(baseIter, emptyValue):
+      while True:
+        try:
+          yield baseIter.next()
+        except (StopIteration):
+          yield emptyValue
 
+    # expected time stamps
+    timestampIter = _safeIter(iter(xrange(startTime, endTime, timeStep)), 
+      None)
+    thisTimestamp = timestampIter.next()
+    
+    dbIter = _safeIter(iter(dataPoints), (None, None) )
+    dbTimestamp, dbValue = dbIter.next()
+    
+    values = []
+    while thisTimestamp is not None:
+      
+      if thisTimestamp == dbTimestamp:
+        # match between expected timestamp and db value
+        values.append(dbValue)
+        thisTimestamp = timestampIter.next()
+        dbTimestamp, dbValue = dbIter.next()
+      elif thisTimestamp < dbTimestamp:
+        # db timestamp has skipped ahead of the expected timestamp
+        # happens when there is a gap in the DB data
+        # pad with a None and advance to the next expected timestamp.
+        values.append(None)
+        thisTimestamp = timestampIter.next()
+      else:
+        # db timestamp is behind the expected timestamp, or the DB timestamp 
+        # is None
+        # Happens when we do not have enough db data to fill the
+        # period.
+        # pad with none and advance to the next expected timestamp 
+        values.append(None)
+        thisTimestamp = timestampIter.next()
+    
+    # we should have exhausted the db iterator
+    dbTimestamp, dbValue = dbIter.next()
+    if not dbTimestamp is None:
+      raise RuntimeError("Failed to exhaust the DB values, first overflow "\
+        "is %s,%s for startTime %s endTime %s timeStep %s" % (dbTimestamp, 
+        dbValue, startTime, endTime, timeStep))
+    
+    return cls(startTime, endTime, timeStep, values)
+    
   @property
   def timestamps(self):
     return xrange(self.startTime, self.endTime, self.timeStep)
