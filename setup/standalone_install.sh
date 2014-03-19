@@ -4,10 +4,12 @@ sudo apt-get update
 sudo apt-get install git apache2 libapache2-mod-wsgi python-virtualenv \
     python-pip python-cairo python-dev
 
-sudo pip install daemonize
 sudo pip install pycassa 
 sudo pip install django 
-sudo pip install twisted 
+
+# reuire twisted < 12 
+# see http://stackoverflow.com/questions/19894708/cant-start-carbon-12-04-python-error-importerror-cannot-import-name-daem
+sudo pip install 'Twisted<12.0'
 sudo pip install tagging
 sudo pip install django-tagging 
 sudo pip install pytz
