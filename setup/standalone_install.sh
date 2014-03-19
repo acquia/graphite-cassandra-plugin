@@ -42,7 +42,7 @@ cat <(echo "no") | sudo python /opt/graphite/webapp/graphite/manage.py syncdb
 # amorton: get the example conf from the dev tree
 # sudo cp -r /opt/graphite/conf/carbon-daemons/example/ /opt/graphite/conf/carbon-daemons/writer
 sudo mkdir -p /opt/graphite/conf/carbon-daemons/
-sudo cp -r /tmp/graphite-cassandra-plugin/setup/src/carbon/conf/carbon-daemons/example /opt/graphite/conf/carbon-daemons/writer
+sudo cp -r /tmp/carbon/conf/carbon-daemons/example /opt/graphite/conf/carbon-daemons/writer
 sudo cp /tmp/graphite-cassandra-plugin/setup/db.conf /opt/graphite/conf/carbon-daemons/writer
 sudo cp /tmp/graphite-cassandra-plugin/setup/daemon.conf /opt/graphite/conf/carbon-daemons/writer
 sudo cp /tmp/graphite-cassandra-plugin/setup/graphite.wsgi /opt/graphite/conf
