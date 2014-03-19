@@ -6,7 +6,7 @@ sudo apt-get install git apache2 libapache2-mod-wsgi python-virtualenv \
 
 sudo pip install pycassa django twisted tagging django-tagging pytz
 
-git clone -b db-plugin https://github.com/thelastpickle/graphite-web.git /tmp/graphite/grap
+git clone -b db-plugin https://github.com/thelastpickle/graphite-web.git /tmp/graphite/graphite-web
 
 cd /tmp/graphite
 GRAPHITE_DIRS=`ls -d */`
