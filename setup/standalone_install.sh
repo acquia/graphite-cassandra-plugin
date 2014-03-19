@@ -6,23 +6,29 @@ sudo apt-get install git apache2 libapache2-mod-wsgi python-virtualenv \
 
 sudo pip install pycassa django twisted tagging django-tagging pytz
 
+git clone -b db-plugin https://github.com/thelastpickle/graphite-web.git /tmp/graphite/grap
+
+cd /tmp/graphite
+GRAPHITE_DIRS=`ls -d */`
+for dir in $GRAPHITE_DIRS; do
+    pushd .
+    cd $dir
+    sudo python setup.py install
+    popd
+done
+
 # Must create access token for command line use when MFA enabled
 # https://help.github.com/articles/creating-an-access-token-for-command-line-use
-git clone https://github.com/thelastpickle/graphite-cassandra-plugin.git \
+git clone -b rollups https://github.com/thelastpickle/graphite-cassandra-plugin.git \
     /tmp/graphite-cassandra-plugin
 
-ln -s /tmp/graphite-cassandra-plugin/graphite_cassandra_plugin/ /tmp/src/graphite_cassandra_plugin
-ln -s /tmp/graphite-cassandra-plugin/carbon_cassandra_plugin/ /tmp/src/carbon_cassandra_plugin
-ln -s /tmp/graphite-cassandra-plugin/graphite_ceres_plugin/ /tmp/src/graphite_ceres_plugin
-
-git clone https://github.com/thelastpickle/carbon.git \
+git clone -b rollups https://github.com/thelastpickle/carbon.git \
     /tmp/carbon
 
-
-cd /tmp/src
-sudo pip install -e /tmp/src/carbon_cassandra_plugin
-sudo pip install -e /tmp/src/graphite_cassandra_plugin
-sudo pip install -e /tmp/src/graphite_ceres_plugin
+cd /tmp/graphite-cassandra-plugin
+sudo pip install -e carbon_cassandra_plugin
+sudo pip install -e graphite_cassandra_plugin
+sudo pip install -e graphite_ceres_plugin
 
 
 # Running into PYTHONPATH issues
