@@ -1,7 +1,9 @@
 #!/bin/bash
 echo -e "Host github.com\n\tStrictHostKeyChecking no\n" >> ~/.ssh/config
 # Setup Graphite deps
-sudo pip install pycassa
+# to get the TLP fork of pycassa, it has the patch we need
+sudo pip install -e git+https://github.com/thelastpickle/pycassa.git#egg=pycassa
+# sudo pip install pycassa
 sudo pip install django
 sudo pip install twisted
 sudo pip install tagging
