@@ -4,7 +4,13 @@ sudo apt-get update
 sudo apt-get install git apache2 libapache2-mod-wsgi python-virtualenv \
     python-pip python-cairo python-dev
 
-sudo pip install pycassa django twisted tagging django-tagging pytz
+sudo pip install daemonize
+sudo pip install pycassa 
+sudo pip install django 
+sudo pip install twisted 
+sudo pip install tagging
+sudo pip install django-tagging 
+sudo pip install pytz
 
 git clone -b db-plugin https://github.com/thelastpickle/graphite-web.git /tmp/graphite/graphite-web
 
