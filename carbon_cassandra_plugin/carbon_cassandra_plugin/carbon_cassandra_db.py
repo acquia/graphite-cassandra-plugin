@@ -2,7 +2,6 @@ from bisect import bisect_left
 import itertools
 import logging
 import os
-import re
 
 import pycassa
 from pycassa import ConnectionPool, ColumnFamily, NotFoundException
