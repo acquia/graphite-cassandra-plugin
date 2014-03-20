@@ -2,6 +2,7 @@ from bisect import bisect_left
 import itertools
 import logging
 import os
+import re
 
 import pycassa
 from pycassa import ConnectionPool, ColumnFamily, NotFoundException
@@ -1113,7 +1114,8 @@ def initializeTableLayout(keyspace, server_list, replicationStrategy,
         createUTF8ColumnFamily(sys_manager, keyspace, tablename)
     
     if localDCName:
-        dcNodes = "dc_%s_nodes" % localDCName
+        # only regex word chars are allowed in the CF name
+        dcNodes = "dc_%s_nodes" % re.sub("\W", "_", localDCName)
         if dcNodes not in cf_defs.keys():
           createUTF8ColumnFamily(sys_manager, keyspace, dcNodes)
     else:
