@@ -27,13 +27,16 @@ class CarbonCassandraDatabase(object):
     servers = cassandra_settings.get('SERVERS')
     servers = [x.strip() for x in servers.split(',')]
 
+    # only regex word chars are allowed in the CF name
+    dc_name = re.sub("\W", "_", cassandra_settings.get("LOCAL_DC_NAME")) 
+
     carbon_cassandra_db.initializeTableLayout(keyspace, servers, 
       cassandra_settings.get("REPLICATION_STRATEGY"), 
       json.loads(cassandra_settings.get("STRATEGY_OPTIONS")), 
-      cassandra_settings.get("LOCAL_DC_NAME"))
+      dc_name)
 
     self.tree = carbon_cassandra_db.DataTree(self.data_dir, keyspace, servers, 
-      localDCName=cassandra_settings.get("LOCAL_DC_NAME"))
+      localDCName=dc_name)
 
     if behavior:
       carbon_cassandra_db.setDefaultSliceCachingBehavior(behavior)

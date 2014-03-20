@@ -1114,8 +1114,8 @@ def initializeTableLayout(keyspace, server_list, replicationStrategy,
         createUTF8ColumnFamily(sys_manager, keyspace, tablename)
     
     if localDCName:
-        # only regex word chars are allowed in the CF name
-        dcNodes = "dc_%s_nodes" % re.sub("\W", "_", localDCName)
+        
+        dcNodes = "dc_%s_nodes" % (localDCName,)
         if dcNodes not in cf_defs.keys():
           createUTF8ColumnFamily(sys_manager, keyspace, dcNodes)
     else:
