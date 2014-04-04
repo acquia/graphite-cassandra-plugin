@@ -14,6 +14,7 @@ sudo pip install 'django-tagging==0.3.1'
 sudo pip install pytz
 sudo pip install pyparsing
 
+git clone git://github.com/graphite-project/ceres.git /tmp/graphite/ceres
 git clone -b db-plugin https://github.com/thelastpickle/graphite-web.git /tmp/graphite/graphite-web
 
 cd /tmp/graphite
