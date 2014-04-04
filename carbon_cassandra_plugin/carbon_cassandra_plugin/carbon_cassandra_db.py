@@ -1,7 +1,8 @@
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 import itertools
 import logging
 import os
+import sys
 
 import pycassa
 from pycassa import ConnectionPool, ColumnFamily, NotFoundException
@@ -767,7 +768,7 @@ class DataNode(object):
 
 class DataSlice(object):
   __slots__ = ('node', 'cassandra_connection', 'startTime', 'timeStep',
-    'nodePath', 'retention', "cfCache")
+    'nodePath', 'ttl', "cfCache")
 
   def __init__(self, node, startTime, timeStep):
     self.node = node
@@ -779,8 +780,21 @@ class DataSlice(object):
 
     # TODO: pull from cache within DataNode.readMetadata
     metadata = self.node.readMetadata()
-    retention = filter(lambda x:x[0] == self.timeStep, metadata['retentions'])[0]
-    self.retention = int(retention[0]) * int(retention[1])
+    # retentions should be [ (timestep, retention )], e.g. (5,24) is a 
+    # 5 second timestep with 24 values stored (i.e. 2 minutes)
+    retentions = list(metadata['retentions'])
+    
+    # ensure it is sorted by increasing timestep
+    retentions.sort(key=lambda x: x[0])
+    # find the first retention pair after me
+    # if this is the last timestep in the config ok to use my own retention 
+    # as nothing will be rolling up this timestep
+    pos = min(bisect_right(retentions, (self.timeStep, sys.maxint)), 
+      len(retentions)-1)
+    next_timestep, next_retention = retentions[pos]
+    # 50% fudge factor because we want the data to be there when the rollup
+    # scripts run
+    self.ttl = next_timestep * next_retention * 1.5
 
   def __repr__(self):
     return "<DataSlice[0x%x]: %s>" % (id(self), self.nodePath)
@@ -910,7 +924,6 @@ class DataSlice(object):
       for timestamp, value in sequence
     }
     tsCF = self.cfCache.getTS("ts{0}".format(self.timeStep))
-    # TODO: Restore TTL, was ttl=self.retention
     # The roll up process relies of reading data from a fine archive that has 
     # overflowed, this data is then selected to fill the corse archive. 
     # e.g. with 5s:2m,1m:5m / retentions 5,24,60,5
@@ -920,7 +933,7 @@ class DataSlice(object):
     #
     # It then cycles through the rentions in the course archive (ts60) 
     # selecting data from the overflow points that match. 
-    # The window for the coard archive ends at the time the fine archive 
+    # The window for the coarse archive ends at the time the fine archive 
     # starts and goes back in time (precision * retention) so starts at 
     # 2014-02-11 01:02:00 and ends at 2014-02-11 01:07:00
     #
@@ -940,7 +953,7 @@ class DataSlice(object):
     # overflow data in the ts5 slice, this is on top of the 2 minutes of 
     # data the ts5 slice retains.  And so forth, for the last slice 
     # we only need to keep the data on disk for the length of it's rentention. 
-    batch.insert(tsCF, key, cols)
+    batch.insert(tsCF, key, cols, ttl=self.ttl)
     
     # Make sure this node in the data tree is marked as a metric.
     dataTreeCF = self.cfCache.get("global_nodes")
