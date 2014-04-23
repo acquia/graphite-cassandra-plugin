@@ -10,7 +10,7 @@ within the PYTHONPATH which will be used by Graphite and MegaCarbon
 
 ### Carbon
 
-Modify the db.conf file located at conf/carbon-daemons/writer/db.conf 
+Modify the db.conf file located at /opt/graphite/conf/carbon-daemons/writer/db.conf 
 
     DATABASE_PLUGIN = carbon_cassandra_plugin.CarbonCassandraDatabase
 
@@ -29,7 +29,7 @@ The carbon daemon is run from the mounted carbon source, start it with:
  
 ### Graphite
 
-Modify `local_settings.py` file located at `webapp/graphite/local_settings.py`
+Modify `local_settings.py` file located at `/opt/graphite/webapp/graphite/local_settings.py`
       
     #####################################
     # Cassandra Plugin Settings         #
