@@ -23,6 +23,14 @@ Modify the db.conf file located at /opt/graphite/conf/carbon-daemons/writer/db.c
     # maintenance tasks such as rollups.
     LOCAL_DC_NAME=datacenter1
 
+When running on **EC2** with the `Ec2Snitch` configured, use the following values for the last three options (adjusting the region and replication factor as necessary):
+
+```
+REPLICATION_STRATEGY = NetworkTopologyStrategy
+STRATEGY_OPTIONS = {"us-west-2" : "3"}
+LOCAL_DC_NAME=us-west-2
+```
+
 The carbon daemon is run from the mounted carbon source, start it with:
 
     sudo -u www-data /vagrant/src/carbon/bin/carbon-daemon.py --config=/opt/graphite/conf/carbon-daemons/writer/ writer start
