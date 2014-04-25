@@ -4,9 +4,9 @@ sudo apt-get update
 sudo apt-get install git apache2 libapache2-mod-wsgi python-virtualenv \
     python-pip python-cairo python-dev
 
-sudo pip install pycassa 
-sudo pip install 'Django==1.6.1' 
-# reuire twisted < 12 
+sudo pip install pycassa
+sudo pip install 'Django==1.6.1'
+# reuire twisted < 12
 # see http://stackoverflow.com/questions/19894708/cant-start-carbon-12-04-python-error-importerror-cannot-import-name-daem
 sudo pip install 'Twisted<12.0'
 sudo pip install tagging
@@ -41,7 +41,7 @@ sudo pip install -e graphite_ceres_plugin
 
 
 # Running into PYTHONPATH issues
-#export PYTHONPATH=$PYTHONPATH:
+#export PYTHONPATH=$PYTHONPATH:/opt/graphite/lib/
 sudo pip install -e /tmp/carbon
 
 # Configuration
