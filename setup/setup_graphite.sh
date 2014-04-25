@@ -13,10 +13,10 @@ sudo pip install pytz
 # Setup Graphite
 git clone git://github.com/graphite-project/ceres.git /tmp/graphite/ceres
 # a.morton: do not clone and install carbon, for dev we will use a vagrant share
-# git clone -b db-plugin https://github.com/thelastpickle/carbon.git /tmp/graphite/carbon
+# git clone -b rollups https://github.com/thelastpickle/carbon.git /tmp/graphite/carbon
 git clone -b db-plugin https://github.com/thelastpickle/graphite-web.git /tmp/graphite/graphite-web
 # Need this to use ssh keys
-git clone git@github.com:acquia/graphite-cassandra-plugin.git /tmp/graphite-cassandra-plugin
+git clone -b rollups git@github.com:acquia/graphite-cassandra-plugin.git /tmp/graphite-cassandra-plugin
 
 cd /tmp/graphite
 GRAPHITE_DIRS=`ls -d */`
