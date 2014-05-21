@@ -254,8 +254,27 @@ TIME_ZONE = 'America/New_York'
 # MIDDLEWARE_CLASSES or APPS
 #from graphite.app_settings import *
 
-GRAPHITE_DATABASE='cassandra'
-GRAPHITE_DATABASE_PLUGIN='graphite_cassandra_plugin'
+GRAPHITE_DATABASE_PLUGIN='graphite_cassandra_plugin.GraphiteCassandraPlugin'
 CASSANDRA_KEYSPACE='graphite'
 CASSANDRA_SERVERS=['127.0.0.1:9160']
 
+# Django Logging for development
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {
+        'file': {
+            'level': 'DEBUG',
+            'class': 'logging.FileHandler',
+            'filename': '/opt/graphite/storage/log/webapp/debug.log',
+        },
+    },
+    'loggers': {
+        'django.request': {
+            'handlers': ['file'],
+            'level': 'DEBUG',
+            'propagate': True,
+        },
+    },
+}
+ 

@@ -11,4 +11,8 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
   config.vm.network 'forwarded_port', guest: 80, host: 8080, auto_correct: true
   config.vm.network 'forwarded_port', guest:8080, host:8081, auto_correct: true
   config.ssh.forward_agent = true
+  config.vm.synced_folder "../carbon_cassandra_plugin/", "/vagrant/src/carbon_cassandra_plugin"
+  config.vm.synced_folder "../graphite_cassandra_plugin/", "/vagrant/src/graphite_cassandra_plugin"
+  config.vm.synced_folder "../graphite_ceres_plugin/", "/vagrant/src/graphite_ceres_plugin"
+  config.vm.synced_folder "../../carbon/", "/vagrant/src/carbon"
 end

@@ -1,4 +1,3 @@
-import os
 from graphite.node import LeafNode, BranchNode
 from graphite.intervals import Interval, IntervalSet
 from graphite.carbonlink import CarbonLink
@@ -47,24 +46,30 @@ class CassandraReader(object):
 
     return (time_info, values)
 
-class CassandraFinder:
-  def __init__(self, keyspace, servers):
+class CassandraFinder(object):
+  """Creates a tree based on the values in Cassandra, and searches
+     over it.
+
+     :param keyspace: Cassandra keyspace to search over
+     :param server_list: List of Cassandra seeds
+  """
+  def __init__(self, keyspace, server_list):
     self.directory = "/"
-    self.tree = DataTree(self.directory, keyspace, servers)
+    self.tree = DataTree(self.directory, keyspace, server_list)
 
   def find_nodes(self, query):
-    log.exception("Query is: %s" % query.pattern)
-    value = self.tree.getSliceInfo(query.pattern)
-    log.exception("Values are: {0}".format(value))
-    query_path = query.pattern.replace('.*', '')
-    log.exception("Query path is: {0}".format(query_path))
 
-    for key in value.keys():
-      if key == 'metric' and value[key] == 'true':
-        reader = CassandraReader(self.tree.getNode(query_path), query_path)
-        yield LeafNode(query_path, reader)
-      elif value[key] == 'metric':
-        reader = CassandraReader(self.tree.getNode(key), key)
-        yield LeafNode(key, reader)
+    childs = self.tree.selfAndChildPaths(query.pattern)
+    childNodes = self.tree.getNode([child
+      for child, isMetric in childs
+      if isMetric
+    ])
+    
+    # make sure we yield in the DB order
+    for child, isMetric in childs:
+      if isMetric:
+        yield LeafNode(child, CassandraReader(childNodes[child], child))
       else:
-        yield BranchNode(key)
+        yield BranchNode(child)
+
+

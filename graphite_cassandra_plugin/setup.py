@@ -31,9 +31,6 @@ setup(name = 'graphite_cassandra_plugin',
     packages = [
         'graphite_cassandra_plugin',
     ],
-    package_dir = { 
-        'graphite_cassandra_plugin' :'src',
-    },
     install_requires = [
         'carbon_cassandra_plugin',
     ],
