@@ -52,10 +52,12 @@ class CassandraFinder(object):
 
      :param keyspace: Cassandra keyspace to search over
      :param server_list: List of Cassandra seeds
+     :param credentials: Hash containing a CQL username and password (or None
+            if not required)
   """
-  def __init__(self, keyspace, server_list):
+  def __init__(self, keyspace, server_list, credentials):
     self.directory = "/"
-    self.tree = DataTree(self.directory, keyspace, server_list)
+    self.tree = DataTree(self.directory, keyspace, server_list, credentials)
 
   def find_nodes(self, query):
 
