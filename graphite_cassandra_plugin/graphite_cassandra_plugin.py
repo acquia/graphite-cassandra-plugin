@@ -57,7 +57,7 @@ class CassandraFinder(object):
   """
   def __init__(self, keyspace, server_list, credentials):
     self.directory = "/"
-    self.tree = DataTree(self.directory, keyspace, server_list, credentials)
+    self.tree = DataTree(self.directory, keyspace, server_list, credentials=credentials)
 
   def find_nodes(self, query):
 
