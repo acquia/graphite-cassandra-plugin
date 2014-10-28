@@ -8,7 +8,7 @@ class GraphiteCassandraPlugin(object):
     try:
       self.username = settings.CASSANDRA_USERNAME
       self.password = settings.CASSANDRA_PASSWORD
-      credentials = {'username': username, 'password': password}
+      credentials = {'username': self.username, 'password': self.password}
     except AttributeError:
       credentials = None
     
