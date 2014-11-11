@@ -62,9 +62,13 @@ Modify `local_settings.py` file located at `/opt/graphite/webapp/graphite/local_
     #####################################
     # Cassandra Plugin Settings         #
     #####################################
-    GRAPHITE_DATABASE_PLUGIN='graphite_cassandra_plugin.GraphiteCassandraPlugin'
     CASSANDRA_KEYSPACE = 'graphite'
     CASSANDRA_SERVERS = ['192.168.1.1:9160','192.168.1.2:9160','192.168.1.3:9160']
+    CASSANDRA_USERNAME = 'cassandra'
+    CASSANDRA_PASSWORD = 'password'
+    STORAGE_FINDERS = (
+        'graphite_cassandra_plugin.graphite_cassandra_plugin.CassandraFinder',
+    )
 
 Start the web server using the Django dev server with:
 

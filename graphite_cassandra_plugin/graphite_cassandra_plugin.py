@@ -50,12 +50,14 @@ class CassandraFinder(object):
   """Creates a tree based on the values in Cassandra, and searches
      over it.
 
-     :param keyspace: Cassandra keyspace to search over
-     :param server_list: List of Cassandra seeds
-     :param credentials: Hash containing a CQL username and password (or None
+     :param config: Configuration provided by the storage api
             if not required)
   """
-  def __init__(self, keyspace, server_list, credentials):
+  def __init__(self, config=None):
+    from django.conf import settings
+    keyspace = getattr(settings, 'CASSANDRA_KEYSPACE')
+    server_list = getattr(settings, 'CASSANDRA_SERVERS')
+    credentials = {'username': getattr(settings, 'CASSANDRA_USERNAME'), 'password': getattr(settings, 'CASSANDRA_PASSWORD')}
     self.directory = "/"
     self.tree = DataTree(self.directory, keyspace, server_list, credentials=credentials)
 
