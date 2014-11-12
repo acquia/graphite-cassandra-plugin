@@ -254,9 +254,13 @@ TIME_ZONE = 'America/New_York'
 # MIDDLEWARE_CLASSES or APPS
 #from graphite.app_settings import *
 
-GRAPHITE_DATABASE_PLUGIN='graphite_cassandra_plugin.GraphiteCassandraPlugin'
 CASSANDRA_KEYSPACE='graphite'
 CASSANDRA_SERVERS=['127.0.0.1:9160']
+CASSANDRA_USERNAME = 'cassandra'
+CASSANDRA_PASSWORD = 'password'
+STORAGE_FINDERS = (
+    'graphite_cassandra_plugin.graphite_cassandra_plugin.CassandraFinder',
+)
 
 # Django Logging for development
 LOGGING = {
