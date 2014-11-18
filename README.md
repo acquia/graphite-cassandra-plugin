@@ -126,6 +126,8 @@ Using the Apache Cassandra CLI to query for information
 ---
 Except as otherwise noted this software is licensed under the [Apache License, Version 2.0](http://www.apache.org/licenses/LICENSE-2.0.html)
 
+Copyright 2014 Acquia, Inc.
+
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
